@@ -39,5 +39,7 @@ async def alertmanager_webhook(
     #   2. verify_signature(secret, raw, x_signature)
     #   3. Parse AlertmanagerPayload (Pydantic)
     #   4. alert_service.ingest(tenant, payload, raw)
+    #        — internally fingerprints, dedupes, creates Investigation in PENDING,
+    #          and calls job_queue.enqueue("investigation", {"investigation_id": ...}).
     #   5. Return {"accepted": N, "alert_ids": [...]}
     raise NotImplementedError
