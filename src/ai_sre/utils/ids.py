@@ -22,7 +22,7 @@ def new_id() -> UUID:
     return UUID(bytes=ULID().bytes)
 
 
-_API_KEY_PREFIX_LEN = 12
+_API_KEY_PREFIX_LEN = 8  # per docs/04-data-model.md §api_key and docs/05-api-spec.md example
 _API_KEY_RAND_LEN = 24  # bytes -> ~32 chars urlsafe-base64
 
 
