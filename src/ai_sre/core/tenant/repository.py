@@ -77,11 +77,17 @@ class ApiKeyRepository:
         return result.scalar_one_or_none()
 
     async def list_for_tenant(self, tenant_id: UUID) -> Sequence[ApiKey]:
-        """List all API keys for a tenant, newest first."""
+        """List all API keys for a tenant, newest first.
+
+        `created_at` is driven by ``func.now()`` server-side, which returns
+        transaction-start time and can tie when two rows are written close
+        together. Tiebreak on ``id`` (UUIDv7, time-ordered) so the ordering
+        stays stable across runs.
+        """
         stmt = (
             select(ApiKey)
             .where(ApiKey.tenant_id == tenant_id)
-            .order_by(ApiKey.created_at.desc())
+            .order_by(ApiKey.created_at.desc(), ApiKey.id.desc())
         )
         result = await self.session.execute(stmt)
         return result.scalars().all()

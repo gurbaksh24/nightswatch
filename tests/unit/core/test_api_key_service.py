@@ -21,6 +21,11 @@ from ai_sre.models.tenant import Tenant
 from ai_sre.utils.crypto import hash_api_key
 from ai_sre.utils.ids import new_id
 
+# Baseline for the fake's monotonically-increasing created_at values. Using
+# a fixed epoch + a per-row offset avoids flakes when two issues land in the
+# same microsecond.
+_FAKE_EPOCH = datetime(2024, 1, 1, tzinfo=timezone.utc)
+
 
 class _FakeTenantRepository:
     def __init__(self) -> None:
@@ -37,13 +42,15 @@ class _FakeApiKeyRepository:
     def __init__(self) -> None:
         self._by_id: dict[UUID, ApiKey] = {}
         self._by_hash: dict[str, ApiKey] = {}
+        self._tick = 0
 
     async def find_by_hash(self, key_hash: str) -> ApiKey | None:
         return self._by_hash.get(key_hash)
 
     async def list_for_tenant(self, tenant_id: UUID) -> list[ApiKey]:
+        # Mirror the real repository's order: created_at DESC, id DESC.
         rows = [row for row in self._by_id.values() if row.tenant_id == tenant_id]
-        rows.sort(key=lambda r: r.created_at, reverse=True)
+        rows.sort(key=lambda r: (r.created_at, r.id.int), reverse=True)
         return rows
 
     async def create(
@@ -56,7 +63,10 @@ class _FakeApiKeyRepository:
             key_hash=key_hash,
             prefix=prefix,
         )
-        now = datetime.now(timezone.utc)
+        # Strictly monotonic timestamp so list-order tests are deterministic
+        # regardless of clock resolution.
+        self._tick += 1
+        now = _FAKE_EPOCH + timedelta(seconds=self._tick)
         row.created_at = now
         row.updated_at = now
         self._by_id[row.id] = row
