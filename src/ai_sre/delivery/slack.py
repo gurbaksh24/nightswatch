@@ -8,7 +8,7 @@ See LLD §14 for the message layout.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -50,7 +50,7 @@ class SlackDelivery(DeliveryChannel):
             return DeliveryReceipt(
                 success=True,
                 channel=self.name,
-                delivered_at=datetime.now(timezone.utc),
+                delivered_at=datetime.now(UTC),
                 external_id=data.get("ts"),
             )
         except httpx.HTTPError as e:

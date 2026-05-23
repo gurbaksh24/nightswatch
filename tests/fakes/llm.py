@@ -11,9 +11,8 @@ from __future__ import annotations
 
 from collections import deque
 
-from ai_sre.llm.gateway import LLMProvider, LLMResponse, Message
 # from ai_sre.llm.tools import ToolSpec
-from ai_sre.llm.gateway import ResponseFormat
+from ai_sre.llm.gateway import LLMProvider, LLMResponse, Message, ResponseFormat
 
 
 class FakeLLMProvider(LLMProvider):

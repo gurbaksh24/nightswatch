@@ -15,7 +15,6 @@ from httpx import AsyncClient
 
 from ai_sre.config import get_settings
 
-
 ADMIN_TOKEN = "test-admin-token"
 
 
@@ -62,10 +61,11 @@ async def test_full_auth_flow(client: AsyncClient) -> None:
     #    via the API by using a side-channel: a request signed with an
     #    initial-bootstrap header. Since the API itself doesn't ship that yet,
     #    we use the service layer directly here for the bootstrap step.
+    from uuid import UUID
+
     from ai_sre.core.tenant.api_key_service import ApiKeyService
     from ai_sre.core.tenant.repository import ApiKeyRepository, TenantRepository
     from ai_sre.db import session_scope
-    from uuid import UUID
 
     async with session_scope() as session:
         service = ApiKeyService(ApiKeyRepository(session), TenantRepository(session))

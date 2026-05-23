@@ -13,13 +13,13 @@ from ai_sre.models.integration import Integration
 from ai_sre.models.investigation import Investigation, InvestigationStage, ToolCall
 from ai_sre.models.knowledge import KnowledgeChunk, KnowledgeDoc
 from ai_sre.models.report import Report
-from ai_sre.models.service import Service, ServiceDependency, MetricCatalogEntry
+from ai_sre.models.service import MetricCatalogEntry, Service, ServiceDependency
 from ai_sre.models.tenant import Tenant
 
 __all__ = [
-    "Base",
     "Alert",
     "ApiKey",
+    "Base",
     "Feedback",
     "Integration",
     "Investigation",

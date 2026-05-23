@@ -7,8 +7,7 @@ integration test in `tests/integration/test_auth_flow.py`.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import UUID
 
 import pytest
@@ -35,7 +34,7 @@ class _FakeTenantRepository:
     async def create(self, *, name: str, slug: str) -> Tenant:
         if slug in self._by_slug:
             raise TenantSlugTaken(f"Slug '{slug}' is already taken.")
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         tenant = Tenant(id=new_id(), name=name, slug=slug, status="active")
         # Server defaults don't fire without a flush; emulate them for assertions.
         tenant.created_at = now

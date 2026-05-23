@@ -53,6 +53,23 @@ class IntegrationUnhealthy(IntegrationError):
     code = "integration.unhealthy"
 
 
+class IntegrationAlreadyExists(IntegrationError):
+    """Tenant already has an integration with this (kind, name)."""
+
+    code = "integration.already_exists"
+
+
+class IntegrationNotFound(IntegrationError):
+    code = "integration.not_found"
+
+
+class IntegrationCredentialDecryptionFailed(IntegrationError):
+    """The envelope-encrypted config could not be decrypted — wrong key or
+    tampered ciphertext. The integration should be flagged ``unhealthy``."""
+
+    code = "integration.credential_decryption_failed"
+
+
 # ---- Service ----
 class ServiceAlreadyExists(AISREError):
     """Tenant tried to register a second service in MVP."""

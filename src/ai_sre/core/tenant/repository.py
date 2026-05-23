@@ -10,7 +10,7 @@ how authentication bootstraps a tenant context in the first place).
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import select
@@ -113,7 +113,7 @@ class ApiKeyRepository:
         if row is None or row.tenant_id != tenant_id:
             return
         if row.revoked_at is None:
-            row.revoked_at = datetime.now(timezone.utc)
+            row.revoked_at = datetime.now(UTC)
             await self.session.flush()
 
     async def mark_used(self, api_key_id: UUID) -> None:
@@ -121,5 +121,5 @@ class ApiKeyRepository:
         row = await self.session.get(ApiKey, api_key_id)
         if row is None:
             return
-        row.last_used_at = datetime.now(timezone.utc)
+        row.last_used_at = datetime.now(UTC)
         await self.session.flush()

@@ -10,7 +10,7 @@ provider. Same for Prometheus, Slack, etc.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import Iterator
 
 import pytest
 import pytest_asyncio

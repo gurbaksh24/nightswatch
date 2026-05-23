@@ -10,7 +10,7 @@ that:
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import pytest
@@ -24,7 +24,7 @@ from ai_sre.utils.ids import new_id
 # Baseline for the fake's monotonically-increasing created_at values. Using
 # a fixed epoch + a per-row offset avoids flakes when two issues land in the
 # same microsecond.
-_FAKE_EPOCH = datetime(2024, 1, 1, tzinfo=timezone.utc)
+_FAKE_EPOCH = datetime(2024, 1, 1, tzinfo=UTC)
 
 
 class _FakeTenantRepository:
@@ -78,12 +78,12 @@ class _FakeApiKeyRepository:
         if row is None or row.tenant_id != tenant_id:
             return
         if row.revoked_at is None:
-            row.revoked_at = datetime.now(timezone.utc)
+            row.revoked_at = datetime.now(UTC)
 
     async def mark_used(self, api_key_id: UUID) -> None:
         row = self._by_id.get(api_key_id)
         if row is not None:
-            row.last_used_at = datetime.now(timezone.utc)
+            row.last_used_at = datetime.now(UTC)
 
 
 def _build() -> tuple[ApiKeyService, _FakeTenantRepository, _FakeApiKeyRepository, Tenant]:
@@ -91,7 +91,7 @@ def _build() -> tuple[ApiKeyService, _FakeTenantRepository, _FakeApiKeyRepositor
     krepo = _FakeApiKeyRepository()
     service = ApiKeyService(krepo, trepo)  # type: ignore[arg-type]
     tenant = Tenant(id=new_id(), name="Acme", slug="acme", status="active")
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     tenant.created_at = now
     tenant.updated_at = now
     trepo.add(tenant)
@@ -137,7 +137,7 @@ async def test_verify_revoked_returns_none() -> None:
 async def test_verify_expired_returns_none() -> None:
     service, _, krepo, tenant = _build()
     issued = await service.issue(tenant.id, name="ci-key")
-    krepo._by_id[issued.id].expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    krepo._by_id[issued.id].expires_at = datetime.now(UTC) - timedelta(minutes=1)
     assert await service.verify(issued.key) is None
 
 
@@ -173,7 +173,7 @@ async def test_revoke_other_tenants_key_is_noop() -> None:
     service, trepo, krepo, tenant = _build()
     issued = await service.issue(tenant.id, name="a")
     other = Tenant(id=new_id(), name="Other", slug="other", status="active")
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     other.created_at = now
     other.updated_at = now
     trepo.add(other)

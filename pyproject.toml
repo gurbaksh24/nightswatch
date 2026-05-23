@@ -84,6 +84,23 @@ ignore = [
 [tool.ruff.lint.isort]
 known-first-party = ["ai_sre"]
 
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's DI sentinels look like generic-Python footguns to B008 but aren't —
+# `Depends`, `Header`, etc. are evaluated per-request by FastAPI, not at
+# function-definition time. Telling bugbear they're safe in defaults is the
+# documented escape hatch (see https://docs.astral.sh/ruff/rules/function-call-in-default-argument/).
+extend-immutable-calls = [
+    "fastapi.Body",
+    "fastapi.Cookie",
+    "fastapi.Depends",
+    "fastapi.File",
+    "fastapi.Form",
+    "fastapi.Header",
+    "fastapi.Path",
+    "fastapi.Query",
+    "fastapi.Security",
+]
+
 # -------------------- mypy --------------------
 [tool.mypy]
 python_version = "3.12"

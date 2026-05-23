@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import UUID
 
 from ai_sre.core.tenant.context import TenantContext
@@ -84,7 +84,7 @@ class ApiKeyService:
             return None
         if row.revoked_at is not None:
             return None
-        if row.expires_at is not None and row.expires_at <= datetime.now(timezone.utc):
+        if row.expires_at is not None and row.expires_at <= datetime.now(UTC):
             return None
         tenant = await self.tenant_repo.get(row.tenant_id)
         if tenant is None or tenant.status != "active":
