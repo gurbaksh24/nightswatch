@@ -16,8 +16,9 @@ Adding a tool:
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Iterable
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ai_sre.core.investigation.context import InvestigationContext

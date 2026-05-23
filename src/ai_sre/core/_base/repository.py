@@ -10,7 +10,8 @@ are inherited.
 
 from __future__ import annotations
 
-from typing import Any, ClassVar, Generic, Sequence, TypeVar
+from collections.abc import Sequence
+from typing import Any, ClassVar, Generic, TypeVar
 from uuid import UUID
 
 from sqlalchemy import Select, select

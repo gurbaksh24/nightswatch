@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any, Generic, TypeVar
-from uuid import UUID
 
 from pydantic import BaseModel, Field
 

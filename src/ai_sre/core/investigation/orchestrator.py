@@ -86,12 +86,12 @@ class InvestigationOrchestrator:
             ctx.mark_completed(stage.name)
             log.info("stage.complete", status=result.status)
             # await self.repo.persist_stage(result)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             log.warning("stage.timeout")
             # await self.repo.mark_stage_timed_out(ctx.investigation_id, stage.name)
         except BudgetExhausted:
             raise
-        except Exception as e:                            # noqa: BLE001
+        except Exception as e:
             log.exception("stage.error", error=str(e))
             # await self.repo.mark_stage_failed(...)
             # Continue to next stage; Report stage handles missing inputs.

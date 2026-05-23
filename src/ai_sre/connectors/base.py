@@ -17,7 +17,6 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Any
 
-
 # ---- Enums and small value types ----
 
 

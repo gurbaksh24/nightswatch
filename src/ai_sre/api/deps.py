@@ -12,22 +12,27 @@ this module for backward-compatible route signatures.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from functools import lru_cache
 
 from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ai_sre.config import get_settings
+from ai_sre.core.integration.repository import IntegrationRepository
+from ai_sre.core.integration.service import IntegrationService
 from ai_sre.core.tenant.api_key_service import ApiKeyService
 from ai_sre.core.tenant.context import TenantContext
 from ai_sre.core.tenant.repository import ApiKeyRepository, TenantRepository
 from ai_sre.core.tenant.service import TenantService
 from ai_sre.db import get_sessionmaker
+from ai_sre.utils.crypto import EnvelopeEncryptionService
 
 __all__ = [
     "TenantContext",
     "admin_only",
     "current_tenant",
     "get_api_key_service",
+    "get_integration_service",
     "get_session",
     "get_tenant_service",
 ]
@@ -57,6 +62,20 @@ def get_api_key_service(
 ) -> ApiKeyService:
     """FastAPI dependency that constructs an `ApiKeyService` per request."""
     return ApiKeyService(ApiKeyRepository(session), TenantRepository(session))
+
+
+@lru_cache(maxsize=1)
+def _get_envelope_crypto() -> EnvelopeEncryptionService:
+    """Process-wide envelope encryption service.
+
+    The crypto service holds the master key — same key for every request,
+    so we cache it. ``get_settings`` is also cached, which makes this safe
+    against env-var changes only after a process restart (intended).
+    """
+    settings = get_settings()
+    return EnvelopeEncryptionService(
+        settings.tenant_encryption_key.get_secret_value()
+    )
 
 
 def _unauthorized(message: str) -> HTTPException:
@@ -98,3 +117,16 @@ async def admin_only(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={"code": "auth.invalid_token", "message": "Admin token required."},
         )
+
+
+def get_integration_service(
+    tenant: TenantContext = Depends(current_tenant),
+    session: AsyncSession = Depends(get_session),
+) -> IntegrationService:
+    """FastAPI dependency that constructs an :class:`IntegrationService`.
+
+    The service is tenant-scoped via the repository; the crypto service is
+    shared process-wide.
+    """
+    repo = IntegrationRepository(session, tenant.tenant_id)
+    return IntegrationService(repo, _get_envelope_crypto())
