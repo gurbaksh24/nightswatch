@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -16,6 +16,11 @@ from ai_sre.models.base import IdMixin, TenantOwnedMixin, TimestampMixin
 
 class Service(IdMixin, TenantOwnedMixin, TimestampMixin, Base):
     __tablename__ = "service"
+    # MVP: one subject service per tenant. Enforced both here (for
+    # Base.metadata.create_all in tests) and in migration 0004.
+    __table_args__ = (
+        UniqueConstraint("tenant_id", name="uq_service_tenant_id"),
+    )
 
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     label_selector: Mapped[dict] = mapped_column(JSONB, nullable=False)

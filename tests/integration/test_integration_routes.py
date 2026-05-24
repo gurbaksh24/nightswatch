@@ -230,22 +230,6 @@ async def test_unauthenticated_request_is_rejected(client: AsyncClient) -> None:
     resp = await client.get("/v1/integrations")
     assert resp.status_code in (401, 422)
 
-
-@pytest.mark.integration
-@pytest.mark.asyncio
-async def test_health_check_stub_returns_501(
-    client: AsyncClient, bootstrap: _Bootstrap
-) -> None:
-    """Out-of-scope endpoint should respond 501, not 500 or 404."""
-    # First create something to call against.
-    resp = await client.post(
-        "/v1/integrations", headers=bootstrap.headers, json=_prom_payload()
-    )
-    assert resp.status_code == 201
-    integration_id = resp.json()["id"]
-
-    resp = await client.post(
-        f"/v1/integrations/{integration_id}/health-check",
-        headers=bootstrap.headers,
-    )
-    assert resp.status_code == 501
+# The health-check endpoint was a 501 stub in spec 0002 and went live in
+# spec 0003. Its current behaviour (202 with a fake queue, full worker-body
+# flow) is covered end-to-end in tests/integration/test_integration_health_check.py.
