@@ -25,6 +25,8 @@ from ai_sre.core.tenant.context import TenantContext
 from ai_sre.core.tenant.repository import ApiKeyRepository, TenantRepository
 from ai_sre.core.tenant.service import TenantService
 from ai_sre.db import get_sessionmaker
+from ai_sre.queue.base import JobQueue
+from ai_sre.queue.procrastinate_queue import ProcrastinateJobQueue
 from ai_sre.utils.crypto import EnvelopeEncryptionService
 
 __all__ = [
@@ -33,6 +35,7 @@ __all__ = [
     "current_tenant",
     "get_api_key_service",
     "get_integration_service",
+    "get_job_queue",
     "get_session",
     "get_tenant_service",
 ]
@@ -130,3 +133,23 @@ def get_integration_service(
     """
     repo = IntegrationRepository(session, tenant.tenant_id)
     return IntegrationService(repo, _get_envelope_crypto())
+
+
+@lru_cache(maxsize=1)
+def _get_job_queue_impl() -> JobQueue:
+    """Process-wide :class:`JobQueue`.
+
+    Built once per process so we don't re-wrap the Procrastinate app on
+    every request. Tests can override this dep via FastAPI's
+    ``dependency_overrides`` to inject an in-memory queue.
+    """
+    # Local import keeps the api/ → workers/ direction limited to startup
+    # wiring. workers/app.py is the only module allowed to import procrastinate.
+    from ai_sre.workers.app import procrastinate_app
+
+    return ProcrastinateJobQueue(procrastinate_app)
+
+
+def get_job_queue() -> JobQueue:
+    """FastAPI dependency that returns the process-wide job queue."""
+    return _get_job_queue_impl()

@@ -24,9 +24,11 @@ from ai_sre.api.deps import (
     TenantContext,
     current_tenant,
     get_integration_service,
+    get_job_queue,
 )
 from ai_sre.core.integration.service import IntegrationService
 from ai_sre.exceptions import IntegrationAlreadyExists, IntegrationNotFound
+from ai_sre.queue.base import JobQueue, JobQueueError
 from ai_sre.schemas.integration import (
     IntegrationCreateRequest,
     IntegrationResponse,
@@ -121,25 +123,59 @@ async def delete_integration(
     return None
 
 
-# ---- Out of scope for spec 0002 — kept as stubs ----
+# ---- Health check (spec 0003) ----
 
 
 @router.post(
     "/integrations/{integration_id}/health-check",
-    summary="Force a health-check (implemented in spec 0003).",
-    include_in_schema=False,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Enqueue a health-check job for an integration.",
 )
 async def force_health_check(
-    integration_id: str,
+    integration_id: UUID,
     tenant: TenantContext = Depends(current_tenant),
+    service: IntegrationService = Depends(get_integration_service),
+    job_queue: JobQueue = Depends(get_job_queue),
 ) -> dict[str, Any]:
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail={
-            "code": "internal",
-            "message": "Health-check ships in spec 0003 (Prometheus connector).",
-        },
-    )
+    """Schedule an asynchronous health probe.
+
+    The actual probe runs in the worker (``run_health_check`` task), which
+    updates ``integration.status`` and ``last_health_check_at``. Poll
+    ``GET /v1/integrations/{id}`` for the result.
+
+    Returns 202 with the enqueued job id; 404 if the integration doesn't
+    belong to this tenant.
+    """
+    row = await service.get(integration_id)
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "code": "integration.not_found",
+                "message": "Integration not found.",
+            },
+        )
+    try:
+        job_id = await job_queue.enqueue(
+            "health_check",
+            {
+                "tenant_id": str(tenant.tenant_id),
+                "integration_id": str(integration_id),
+            },
+        )
+    except JobQueueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "internal",
+                "message": f"Could not enqueue health check: {exc}",
+            },
+        ) from exc
+    return {
+        "integration_id": str(integration_id),
+        "job_id": job_id,
+        "status": "queued",
+    }
 
 
 @router.get(
