@@ -31,9 +31,12 @@ class ConnectorKind(StrEnum):
 
 @dataclass(frozen=True)
 class ConnectorHealth:
+    """Outcome of a connector health probe."""
+
     healthy: bool
     latency_ms: int | None = None
     error: str | None = None
+    details: dict[str, Any] = field(default_factory=dict)
 
 
 # ---- Query intents (tagged union) ----
@@ -155,15 +158,26 @@ class Connector(ABC):
     async def health_check(self) -> ConnectorHealth: ...
 
     @abstractmethod
-    async def discover_topology(self, service: dict) -> dict:
-        """Return upstream/downstream services for the given subject service."""
+    async def discover_topology(self, service: dict[str, Any]) -> dict[str, Any]:
+        """Return upstream/downstream services for the given subject service.
+
+        Implemented in spec 0005.
+        """
 
     @abstractmethod
-    async def discover_metrics(self, service: dict) -> list[dict]:
-        """Return metric catalog entries (name, type, labels) for the service."""
+    async def discover_metrics(self, service: dict[str, Any]) -> list[dict[str, Any]]:
+        """Return metric catalog entries (name, type, labels) for the service.
+
+        Implemented in spec 0005.
+        """
 
     @abstractmethod
     async def query(self, query: ConnectorQuery) -> ConnectorResult:
-        """Execute a typed query. Raise ConnectorUnsupported for variants the
-        connector doesn't handle.
+        """Execute a typed query.
+
+        Raises:
+            ConnectorUnsupported: for query variants this connector can't run
+                (e.g. ``LogQuery`` against a Prometheus connector).
+            ConnectorTimeout: if the upstream system doesn't respond within the
+                configured timeout.
         """
