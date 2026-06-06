@@ -18,8 +18,11 @@ from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ai_sre.config import get_settings
+from ai_sre.connectors.registry import ConnectorRegistry
 from ai_sre.core.integration.repository import IntegrationRepository
 from ai_sre.core.integration.service import IntegrationService
+from ai_sre.core.service.repository import ServiceRepository
+from ai_sre.core.service.service import ServiceService
 from ai_sre.core.tenant.api_key_service import ApiKeyService
 from ai_sre.core.tenant.context import TenantContext
 from ai_sre.core.tenant.repository import ApiKeyRepository, TenantRepository
@@ -34,8 +37,10 @@ __all__ = [
     "admin_only",
     "current_tenant",
     "get_api_key_service",
+    "get_connector_registry",
     "get_integration_service",
     "get_job_queue",
+    "get_service_service",
     "get_session",
     "get_tenant_service",
 ]
@@ -153,3 +158,35 @@ def _get_job_queue_impl() -> JobQueue:
 def get_job_queue() -> JobQueue:
     """FastAPI dependency that returns the process-wide job queue."""
     return _get_job_queue_impl()
+
+
+def get_connector_registry() -> ConnectorRegistry:
+    """FastAPI dependency that returns a :class:`ConnectorRegistry`.
+
+    Built per-request rather than cached: construction is cheap (no
+    network/DB until a query actually runs) and skipping the cache avoids
+    stale-sessionmaker hazards across tests that rewrite the DB URL. Same
+    reasoning as :func:`ai_sre.workers.app._build_connector_registry`.
+    """
+    settings = get_settings()
+    return ConnectorRegistry(
+        sessionmaker=get_sessionmaker(),
+        crypto=_get_envelope_crypto(),
+        query_timeout_seconds=settings.prom_query_timeout_seconds,
+        max_points=settings.prom_max_points,
+        max_series=settings.prom_max_series,
+    )
+
+
+def get_service_service(
+    tenant: TenantContext = Depends(current_tenant),
+    session: AsyncSession = Depends(get_session),
+    connector_registry: ConnectorRegistry = Depends(get_connector_registry),
+) -> ServiceService:
+    """FastAPI dependency that constructs a :class:`ServiceService`.
+
+    The repository is tenant-scoped; the connector registry is shared
+    across requests within the process.
+    """
+    repo = ServiceRepository(session, tenant.tenant_id)
+    return ServiceService(repo, connector_registry)
