@@ -159,12 +159,127 @@ class PrometheusConnector(Connector):
         )
 
     async def discover_topology(self, service: dict[str, Any]) -> dict[str, Any]:
-        """Implemented in spec 0005."""
-        raise NotImplementedError("Topology discovery lands in spec 0005.")
+        """Infer upstream/downstream dependency edges from label conventions.
+
+        Returns ``{"upstream": [{"name", "via_label"}], "downstream": [...]}``.
+        Delegates the Prometheus-specific logic to
+        :class:`~ai_sre.connectors.prometheus.catalog.TopologyDiscovery`.
+        """
+        # Local import: catalog.py type-hints PrometheusConnector, so importing
+        # it at module load would cycle.
+        from ai_sre.connectors.prometheus.catalog import (
+            TopologyConventions,
+            TopologyDiscovery,
+        )
+
+        selector = service.get("label_selector") or {}
+        discovery = TopologyDiscovery(self, TopologyConventions())
+        deps = await discovery.discover(selector)
+        return {
+            "upstream": [
+                {"name": d.name, "via_label": d.via_label}
+                for d in deps
+                if d.direction == "upstream"
+            ],
+            "downstream": [
+                {"name": d.name, "via_label": d.via_label}
+                for d in deps
+                if d.direction == "downstream"
+            ],
+        }
 
     async def discover_metrics(self, service: dict[str, Any]) -> list[dict[str, Any]]:
-        """Implemented in spec 0005."""
-        raise NotImplementedError("Metric catalog discovery lands in spec 0005.")
+        """Discover the metric catalog for the service's label selector.
+
+        Returns one dict per metric in the persisted catalog shape
+        (``metric_name``, ``metric_type``, ``labels``, ``unit``,
+        ``help_text``). Delegates to
+        :class:`~ai_sre.connectors.prometheus.catalog.MetricCatalogDiscovery`.
+        """
+        from ai_sre.connectors.prometheus.catalog import MetricCatalogDiscovery
+
+        selector = service.get("label_selector") or {}
+        entries = await MetricCatalogDiscovery(self).discover(selector)
+        return [e.to_catalog_dict() for e in entries]
+
+    # ---- discovery HTTP primitives (used by catalog.py) ----
+
+    async def get_series(
+        self,
+        match: list[str],
+        start: datetime | None = None,
+        end: datetime | None = None,
+    ) -> list[dict[str, str]]:
+        """Return the label sets of series matching ``match[]`` selectors.
+
+        Wraps ``GET /api/v1/series``. The result is capped at ``max_series``
+        (post-hoc, like :meth:`query`) since Prometheus has no LIMIT.
+        """
+        params: dict[str, Any] = {"match[]": match}
+        if start is not None:
+            params["start"] = start.timestamp()
+        if end is not None:
+            params["end"] = end.timestamp()
+        body = await self._get_api("/api/v1/series", params)
+        data: list[dict[str, str]] = body.get("data", []) or []
+        if len(data) > self.config.max_series:
+            logger.warning(
+                "prometheus.series.truncated",
+                count=len(data),
+                max_series=self.config.max_series,
+            )
+            data = data[: self.config.max_series]
+        return data
+
+    async def get_metadata(self) -> dict[str, list[dict[str, Any]]]:
+        """Return Prometheus metric metadata (``GET /api/v1/metadata``).
+
+        Best-effort enrichment: returns ``{}`` on any failure rather than
+        raising, since catalog discovery should still succeed without
+        type/help/unit annotations.
+        """
+        try:
+            body = await self._get_api("/api/v1/metadata", {})
+        except ConnectorError:
+            return {}
+        data: dict[str, list[dict[str, Any]]] = body.get("data", {}) or {}
+        return data
+
+    # ---- internals ----
+
+    async def _get_api(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
+        """GET a Prometheus API path and return the parsed success body.
+
+        Raises:
+            ConnectorTimeout: on httpx timeout.
+            ConnectorError: on transport failure, non-200, or a Prometheus
+                ``status != success`` body.
+        """
+        try:
+            r = await self._client.get(path, params=params)
+        except httpx.TimeoutException as exc:
+            raise ConnectorTimeout(
+                f"Prometheus request to {path} timed out after "
+                f"{self.config.query_timeout_seconds}s.",
+                details={"path": path},
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise ConnectorError(
+                f"HTTP transport error for {path}: {exc}",
+                details={"path": path},
+            ) from exc
+        if r.status_code != 200:
+            raise ConnectorError(
+                f"Prometheus returned HTTP {r.status_code} for {path}.",
+                details={"path": path, "status_code": r.status_code},
+            )
+        body: dict[str, Any] = r.json()
+        if body.get("status") != "success":
+            raise ConnectorError(
+                str(body.get("error", "Prometheus error")),
+                details={"path": path, "errorType": body.get("errorType")},
+            )
+        return body
 
     async def query(self, query: ConnectorQuery) -> ConnectorResult:
         """Execute a PromQL query against ``/api/v1/query`` (instant) or
