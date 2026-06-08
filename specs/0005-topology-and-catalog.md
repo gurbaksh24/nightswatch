@@ -87,9 +87,22 @@ class TopologyConventions:
 
 ## Rollout
 
-- Migration: probably none (tables exist).
-- Periodic-task schedules deployed at app start (idempotent).
-- Observability: metric `aisre_catalog_metrics_discovered{service_id}` and `aisre_topology_edges_discovered{direction}`.
+- Migration: **required.** `service_dependency` and `metric_catalog_entry` were
+  modelled in ORM since spec 0004 but never migrated (only `service` existed).
+  Migration `0005_topology_catalog` creates both, and adds `last_seen_at` +
+  `UniqueConstraint(service_id, direction, name)` to `service_dependency` and
+  `UniqueConstraint(service_id, metric_name)` to `metric_catalog_entry`.
+- Periodic-task schedules deployed at app start (idempotent): a single
+  `refresh_all_discovery` periodic task (cron `0 */6 * * *`) fans out per
+  service. Workers must consume the `discovery` queue (added to the worker
+  entrypoint).
+- Observability: discovery counts are emitted on the structured logs
+  (`catalog.refresh.complete` / `topology.refresh.complete`, with
+  `discovered=`). The dedicated Prometheus counters
+  (`aisre_catalog_metrics_discovered`, `aisre_topology_edges_discovered`) are
+  deferred to spec 0017 (Hardening), where `/metrics` exposition and the metric
+  registry conventions land — nothing else in the codebase emits Prometheus
+  metrics yet.
 
 ## Definition of done
 

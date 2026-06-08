@@ -20,6 +20,14 @@ from procrastinate import App, PsycopgConnector
 from ai_sre.config import get_settings
 from ai_sre.connectors.registry import ConnectorRegistry
 from ai_sre.core.integration.repository import IntegrationRepository
+from ai_sre.core.service.catalog_service import CatalogService
+from ai_sre.core.service.repository import (
+    MetricCatalogRepository,
+    ServiceDependencyRepository,
+    ServiceRepository,
+)
+from ai_sre.core.service.topology_service import TopologyService
+from ai_sre.core.tenant.repository import TenantRepository
 from ai_sre.db import get_sessionmaker
 from ai_sre.utils.crypto import EnvelopeEncryptionService
 from ai_sre.utils.logging import get_logger
@@ -131,3 +139,125 @@ async def run_health_check_task(tenant_id: str, integration_id: str) -> None:
     cover transient transport hiccups (DNS blip, etc).
     """
     await run_health_check(tenant_id, integration_id)
+
+
+# ---- Discovery (spec 0005): metric catalog + topology refresh ----
+
+
+async def run_metric_catalog_refresh(tenant_id: str, service_id: str) -> None:
+    """Refresh the metric catalog for one service.
+
+    Extracted from the task wrapper so tests can drive it directly. Loads
+    the service, discovers metrics via the connector, and replaces the
+    catalog rows. Idempotent: a missing service (deleted between enqueue and
+    pickup) logs and returns cleanly.
+    """
+    log = logger.bind(tenant_id=tenant_id, service_id=service_id)
+    tenant_uuid = UUID(tenant_id)
+    service_uuid = UUID(service_id)
+
+    registry = _build_connector_registry()
+    try:
+        sm = get_sessionmaker()
+        async with sm() as session:
+            catalog_service = CatalogService(
+                ServiceRepository(session, tenant_uuid),
+                MetricCatalogRepository(session, tenant_uuid),
+                registry,
+            )
+            result = await catalog_service.refresh_by_id(service_uuid)
+            await session.commit()
+    finally:
+        await registry.close_all()
+
+    if result is None:
+        log.warning("worker.metric_catalog_refresh.service_missing")
+        return
+    log.info(
+        "worker.metric_catalog_refresh.complete",
+        discovered=result.discovered,
+        status=result.status,
+    )
+
+
+async def run_topology_refresh(tenant_id: str, service_id: str) -> None:
+    """Refresh the dependency topology for one service. See
+    :func:`run_metric_catalog_refresh` for the shape/idempotency notes."""
+    log = logger.bind(tenant_id=tenant_id, service_id=service_id)
+    tenant_uuid = UUID(tenant_id)
+    service_uuid = UUID(service_id)
+
+    registry = _build_connector_registry()
+    try:
+        sm = get_sessionmaker()
+        async with sm() as session:
+            topology_service = TopologyService(
+                ServiceRepository(session, tenant_uuid),
+                ServiceDependencyRepository(session, tenant_uuid),
+                registry,
+            )
+            result = await topology_service.refresh_by_id(service_uuid)
+            await session.commit()
+    finally:
+        await registry.close_all()
+
+    if result is None:
+        log.warning("worker.topology_refresh.service_missing")
+        return
+    log.info(
+        "worker.topology_refresh.complete",
+        discovered=result.discovered,
+        status=result.status,
+    )
+
+
+async def list_services_for_refresh() -> list[tuple[str, str]]:
+    """Return ``(tenant_id, service_id)`` for every registered service.
+
+    Used by the periodic refresh to fan out. Tenant enumeration goes through
+    the root :class:`TenantRepository`; each service lookup is tenant-scoped.
+    """
+    sm = get_sessionmaker()
+    pairs: list[tuple[str, str]] = []
+    async with sm() as session:
+        tenants = await TenantRepository(session).list_all()
+        for tenant in tenants:
+            service = await ServiceRepository(session, tenant.id).get_for_tenant()
+            if service is not None:
+                pairs.append((str(tenant.id), str(service.id)))
+    return pairs
+
+
+async def _enqueue_all_discovery_refreshes() -> int:
+    """Defer a catalog + topology refresh for every service. Returns the
+    number of services fanned out to."""
+    pairs = await list_services_for_refresh()
+    for tenant_id, service_id in pairs:
+        await run_metric_catalog_refresh_task.defer_async(
+            tenant_id=tenant_id, service_id=service_id
+        )
+        await run_topology_refresh_task.defer_async(
+            tenant_id=tenant_id, service_id=service_id
+        )
+    return len(pairs)
+
+
+@procrastinate_app.task(name="run_metric_catalog_refresh", queue="discovery", retry=2)
+async def run_metric_catalog_refresh_task(tenant_id: str, service_id: str) -> None:
+    """Procrastinate entrypoint for a single metric-catalog refresh."""
+    await run_metric_catalog_refresh(tenant_id, service_id)
+
+
+@procrastinate_app.task(name="run_topology_refresh", queue="discovery", retry=2)
+async def run_topology_refresh_task(tenant_id: str, service_id: str) -> None:
+    """Procrastinate entrypoint for a single topology refresh."""
+    await run_topology_refresh(tenant_id, service_id)
+
+
+@procrastinate_app.periodic(cron="0 */6 * * *")
+@procrastinate_app.task(name="refresh_all_discovery", queue="discovery", pass_context=False)
+async def refresh_all_discovery_task(timestamp: int) -> None:
+    """Every 6h: fan out a catalog + topology refresh for every service
+    (FR-3.2). The ``timestamp`` arg is Procrastinate's periodic contract."""
+    count = await _enqueue_all_discovery_refreshes()
+    logger.info("worker.refresh_all_discovery.enqueued", services=count)

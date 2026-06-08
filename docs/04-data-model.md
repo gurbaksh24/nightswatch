@@ -79,8 +79,11 @@ Edges discovered between services in the customer's stack.
 | `service_id` | `UUID` FK → `service.id` | the subject service |
 | `direction` | `TEXT` | `upstream` (calls subject) / `downstream` (called by subject) |
 | `name` | `TEXT` | discovered service name |
-| `metadata` | `JSONB` | how it was discovered, label selectors, etc. |
+| `extra_metadata` | `JSONB` | how it was discovered (e.g. `via_label`). Named `extra_metadata` in the ORM because `metadata` is reserved by SQLAlchemy. |
 | `confirmed_by_user` | `BOOLEAN` NOT NULL DEFAULT FALSE | |
+| `last_seen_at` | `TIMESTAMPTZ` NULL | when last observed during a topology refresh. Edges that stop appearing keep their old timestamp (stale) rather than being deleted — they may be user-confirmed. (spec 0005) |
+
+Unique: `(service_id, direction, name)` — topology refresh upserts on this key.
 
 ### `metric_catalog_entry`
 

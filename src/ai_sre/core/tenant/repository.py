@@ -38,6 +38,17 @@ class TenantRepository:
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def list_all(self) -> Sequence[Tenant]:
+        """Return every tenant, oldest first.
+
+        Root-level and intentionally NOT tenant-scoped — used by cross-tenant
+        maintenance jobs (e.g. the periodic discovery refresh in spec 0005)
+        that legitimately need to fan out over all tenants.
+        """
+        stmt = select(Tenant).order_by(Tenant.created_at, Tenant.id)
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
     async def create(self, *, name: str, slug: str) -> Tenant:
         """Insert a new tenant. Raises `TenantSlugTaken` on slug conflict."""
         tenant = Tenant(name=name, slug=slug, status="active")

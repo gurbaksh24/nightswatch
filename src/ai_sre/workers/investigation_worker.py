@@ -22,14 +22,18 @@ logger = get_logger(__name__)
 async def main() -> None:
     settings = get_settings()
     configure_logging(settings)
+    # Consume every queue the app registers tasks on: investigations, plus
+    # integrations (health checks) and discovery (catalog/topology refresh +
+    # the periodic fan-out). Periodic scheduling runs inside the worker loop.
+    queues = ["investigations", "integrations", "discovery"]
     logger.info(
         "worker.start",
-        queues=["investigations"],
+        queues=queues,
         concurrency=settings.queue_concurrency,
     )
     async with procrastinate_app.open_async():
         await procrastinate_app.run_worker_async(
-            queues=["investigations"],
+            queues=queues,
             concurrency=settings.queue_concurrency,
         )
 
