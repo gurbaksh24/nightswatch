@@ -13,14 +13,18 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from functools import lru_cache
+from uuid import UUID
 
 from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ai_sre.config import get_settings
 from ai_sre.connectors.registry import ConnectorRegistry
+from ai_sre.core.alert.repository import AlertRepository
+from ai_sre.core.alert.service import AlertService
 from ai_sre.core.integration.repository import IntegrationRepository
 from ai_sre.core.integration.service import IntegrationService
+from ai_sre.core.investigation.repository import InvestigationRepository
 from ai_sre.core.service.catalog_service import CatalogService
 from ai_sre.core.service.repository import (
     MetricCatalogRepository,
@@ -42,10 +46,12 @@ __all__ = [
     "TenantContext",
     "admin_only",
     "current_tenant",
+    "get_alert_service",
     "get_api_key_service",
     "get_catalog_service",
     "get_connector_registry",
     "get_integration_service",
+    "get_integration_service_for_tenant",
     "get_job_queue",
     "get_service_service",
     "get_session",
@@ -223,4 +229,41 @@ def get_topology_service(
         ServiceRepository(session, tenant.tenant_id),
         ServiceDependencyRepository(session, tenant.tenant_id),
         connector_registry,
+    )
+
+
+# ---- Webhook (path-scoped, no bearer) ----
+#
+# The Alertmanager webhook is authenticated by URL tenant_id + HMAC, not a
+# bearer token, so these deps take ``tenant_id`` straight from the path
+# rather than from ``current_tenant``.
+
+
+def get_integration_service_for_tenant(
+    tenant_id: UUID,
+    session: AsyncSession = Depends(get_session),
+) -> IntegrationService:
+    """IntegrationService scoped to a path ``tenant_id`` (no bearer auth).
+
+    Used by the webhook receiver to load + decrypt the tenant's webhook
+    signing secret.
+    """
+    return IntegrationService(
+        IntegrationRepository(session, tenant_id), _get_envelope_crypto()
+    )
+
+
+def get_alert_service(
+    tenant_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    job_queue: JobQueue = Depends(get_job_queue),
+) -> AlertService:
+    """AlertService scoped to a path ``tenant_id`` (no bearer auth)."""
+    settings = get_settings()
+    return AlertService(
+        AlertRepository(session, tenant_id),
+        InvestigationRepository(session, tenant_id),
+        ServiceRepository(session, tenant_id),
+        job_queue,
+        dedupe_window_seconds=settings.inv_dedupe_window_seconds,
     )

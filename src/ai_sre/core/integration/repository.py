@@ -82,3 +82,15 @@ class IntegrationRepository(TenantScopedRepository[Integration]):
         await self.session.delete(row)
         await self.session.flush()
         return True
+
+    async def set_webhook_secret(
+        self, integration_id: UUID, encrypted: bytes
+    ) -> Integration | None:
+        """Store the envelope-encrypted webhook signing secret. Returns the
+        updated row, or ``None`` if not owned by this tenant."""
+        row = await self.get(integration_id)
+        if row is None:
+            return None
+        row.webhook_signing_secret_encrypted = encrypted
+        await self.session.flush()
+        return row

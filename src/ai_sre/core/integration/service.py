@@ -27,6 +27,7 @@ from ai_sre.exceptions import (
 from ai_sre.models.integration import Integration
 from ai_sre.utils.crypto import EnvelopeEncryptionError, EnvelopeEncryptionService
 from ai_sre.utils.logging import get_logger
+from ai_sre.utils.webhook_signature import generate_webhook_secret
 
 logger = get_logger(__name__)
 
@@ -97,6 +98,53 @@ class IntegrationService:
             tenant_id=str(self.tenant_id),
             integration_id=str(integration_id),
         )
+
+    async def generate_webhook_secret(self, integration_id: UUID) -> str:
+        """Generate, store (encrypted), and return a webhook signing secret.
+
+        Used at Prometheus integration creation and for rotation. The
+        plaintext is returned to the caller once and never persisted in the
+        clear. Raises :class:`IntegrationNotFound` if the id isn't owned by
+        this tenant.
+        """
+        secret = generate_webhook_secret()
+        encrypted = self.crypto.encrypt(secret.encode("utf-8"))
+        row = await self.repo.set_webhook_secret(integration_id, encrypted)
+        if row is None:
+            raise IntegrationNotFound(
+                f"Integration {integration_id} not found.",
+                details={"integration_id": str(integration_id)},
+            )
+        logger.info(
+            "integration.webhook_secret_generated",
+            tenant_id=str(self.tenant_id),
+            integration_id=str(integration_id),
+        )
+        return secret
+
+    def get_webhook_secret(self, integration: Integration) -> str | None:
+        """Return the plaintext webhook signing secret, or ``None`` if the
+        integration has none set.
+
+        Raises :class:`IntegrationCredentialDecryptionFailed` on a corrupt
+        blob / wrong key.
+        """
+        blob = integration.webhook_signing_secret_encrypted
+        if blob is None:
+            return None
+        try:
+            return self.crypto.decrypt(blob).decode("utf-8")
+        except EnvelopeEncryptionError as exc:
+            logger.error(
+                "integration.webhook_secret_decrypt_failed",
+                tenant_id=str(self.tenant_id),
+                integration_id=str(integration.id),
+                error=str(exc),
+            )
+            raise IntegrationCredentialDecryptionFailed(
+                f"Could not decrypt webhook secret for integration {integration.id}.",
+                details={"integration_id": str(integration.id)},
+            ) from exc
 
     def decrypt_config(self, integration: Integration) -> dict[str, Any]:
         """Return the plaintext config dict for an integration.

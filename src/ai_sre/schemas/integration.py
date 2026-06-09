@@ -81,3 +81,24 @@ class IntegrationResponse(BaseModel):
     last_health_check_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class IntegrationCreatedResponse(IntegrationResponse):
+    """Response for ``POST /v1/integrations``.
+
+    For a Prometheus integration this carries the freshly generated webhook
+    signing secret — returned **once**, never again (configure your
+    Alertmanager with it). ``None`` for kinds that don't use one.
+    """
+
+    webhook_signing_secret: str | None = Field(
+        default=None,
+        description="Webhook signing secret. Shown once at creation only.",
+    )
+
+
+class WebhookSecretResponse(BaseModel):
+    """Response for ``POST /v1/integrations/{id}/webhook-secret`` (rotate)."""
+
+    integration_id: UUID
+    webhook_signing_secret: str = Field(description="Shown once; rotates the old one.")
