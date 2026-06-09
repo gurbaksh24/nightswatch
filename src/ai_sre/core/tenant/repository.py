@@ -60,6 +60,11 @@ class TenantRepository:
         if name is not None:
             tenant.name = name
         await self.session.flush()
+        # `updated_at` has onupdate=func.now(); after the UPDATE flush it's
+        # expired, so refresh it within the async greenlet. Otherwise the
+        # route's Pydantic serialization triggers a lazy load in a sync
+        # context -> MissingGreenlet. (Mirrors ServiceRepository/Integration.)
+        await self.session.refresh(tenant)
         return tenant
 
 
