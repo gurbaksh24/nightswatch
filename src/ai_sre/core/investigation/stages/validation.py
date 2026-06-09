@@ -28,9 +28,11 @@ class ValidationStage:
 
     async def execute(self, ctx: InvestigationContext) -> StageResult:
         ctx.budget.assert_within_wall()
-        ctx.budget.assert_can_call_llm()
-        # TODO(spec-NNNN: validation-stage):
-        #   for h in ctx.hypotheses[:top_k_to_validate]:
-        #       result = await llm.tool_loop(VALIDATION_SYSTEM, render(h, ctx), tools, ...)
-        #       ctx.validated.append(parse_validated(h, result))
-        return StageResult(name=self.name, status="succeeded")
+        # Spec 0007: no-op. The agentic per-hypothesis validation tool-loop
+        # lands in spec 0011; until then ctx.validated stays empty and the
+        # report falls back to the raw hypotheses.
+        return StageResult(
+            name=self.name,
+            status="succeeded",
+            output={"validated_count": len(ctx.validated)},
+        )

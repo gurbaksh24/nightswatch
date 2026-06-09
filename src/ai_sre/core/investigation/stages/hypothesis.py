@@ -23,7 +23,11 @@ keep them.
 
 from __future__ import annotations
 
-from ai_sre.core.investigation.context import InvestigationContext, StageResult
+from ai_sre.core.investigation.context import (
+    Hypothesis,
+    InvestigationContext,
+    StageResult,
+)
 
 
 class HypothesisStage:
@@ -33,13 +37,19 @@ class HypothesisStage:
 
     async def execute(self, ctx: InvestigationContext) -> StageResult:
         ctx.budget.assert_within_wall()
-        ctx.budget.assert_can_call_llm()
 
-        # TODO(spec-NNNN: hypothesis-stage):
-        #   1. system = HYPOTHESIS_SYSTEM_PROMPT (from llm/prompts/hypothesis.py)
-        #   2. user   = render(ctx.alert, ctx.context, ctx.service, ctx.dependencies)
-        #   3. tools  = llm.tools.for_stage("hypothesis")
-        #   4. result = await llm.tool_loop(system, user, tools, dispatcher, budget)
-        #   5. ctx.hypotheses = parse_hypotheses(result.final_message)
-
-        return StageResult(name=self.name, status="succeeded")
+        # Spec 0007: deterministic placeholder. The real agentic tool-loop
+        # (system prompt -> llm.tool_loop -> parse hypotheses) lands in spec
+        # 0009. We emit one placeholder so the rest of the pipeline has
+        # something to carry through.
+        ctx.hypotheses = [
+            Hypothesis(
+                statement="Placeholder hypothesis (LLM hypothesis stage lands in spec 0009).",
+                initial_confidence=0.0,
+            )
+        ]
+        return StageResult(
+            name=self.name,
+            status="succeeded",
+            output={"hypothesis_count": len(ctx.hypotheses)},
+        )

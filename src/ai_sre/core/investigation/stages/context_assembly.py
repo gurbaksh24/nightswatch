@@ -16,6 +16,7 @@ to ground its initial reasoning.
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 from ai_sre.core.investigation.context import (
     ContextSummary,
@@ -37,7 +38,7 @@ class ContextAssemblyStage:
         #   - connector.query(recent_metrics_for(ctx.service))
         #   - connector.query(dependency_health_for(ctx.dependencies))
         #   - change_feed.list_recent(ctx.service, window)
-        async def _stub() -> dict:
+        async def _stub() -> dict[str, Any]:
             await asyncio.sleep(0)
             return {}
 
