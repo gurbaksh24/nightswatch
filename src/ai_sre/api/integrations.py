@@ -30,8 +30,10 @@ from ai_sre.core.integration.service import IntegrationService
 from ai_sre.exceptions import IntegrationAlreadyExists, IntegrationNotFound
 from ai_sre.queue.base import JobQueue, JobQueueError
 from ai_sre.schemas.integration import (
+    IntegrationCreatedResponse,
     IntegrationCreateRequest,
     IntegrationResponse,
+    WebhookSecretResponse,
 )
 
 router = APIRouter()
@@ -40,17 +42,19 @@ router = APIRouter()
 @router.post(
     "/integrations",
     status_code=status.HTTP_201_CREATED,
-    response_model=IntegrationResponse,
+    response_model=IntegrationCreatedResponse,
     summary="Create an integration (Prometheus, Slack, …). Health check follows asynchronously.",
 )
 async def create_integration(
     body: IntegrationCreateRequest,
     service: IntegrationService = Depends(get_integration_service),
-) -> IntegrationResponse:
+) -> IntegrationCreatedResponse:
     """Persist a new integration with its config envelope-encrypted at rest.
 
-    The response never includes the encrypted blob or any secret material —
-    only the public view of the config (host, auth type).
+    The response never includes the encrypted config blob. For a Prometheus
+    integration it does include a freshly generated webhook signing secret —
+    returned **once** so the tenant can configure their Alertmanager (spec
+    0006). Rotate it later via ``POST /v1/integrations/{id}/webhook-secret``.
     """
     try:
         row = await service.create(
@@ -63,7 +67,40 @@ async def create_integration(
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": exc.code, "message": exc.message, "details": exc.details},
         ) from exc
-    return IntegrationResponse.model_validate(row, from_attributes=True)
+
+    resp = IntegrationCreatedResponse.model_validate(row, from_attributes=True)
+    if body.kind == "prometheus":
+        resp.webhook_signing_secret = await service.generate_webhook_secret(row.id)
+    return resp
+
+
+@router.post(
+    "/integrations/{integration_id}/webhook-secret",
+    response_model=WebhookSecretResponse,
+    summary="Rotate (or set) the webhook signing secret. Shown once.",
+)
+async def rotate_webhook_secret(
+    integration_id: UUID,
+    service: IntegrationService = Depends(get_integration_service),
+) -> WebhookSecretResponse:
+    """Generate a new webhook signing secret, replacing any existing one.
+
+    The previous secret stops working immediately. 404 if the integration
+    isn't owned by this tenant.
+    """
+    row = await service.get(integration_id)
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "code": "integration.not_found",
+                "message": "Integration not found.",
+            },
+        )
+    secret = await service.generate_webhook_secret(integration_id)
+    return WebhookSecretResponse(
+        integration_id=integration_id, webhook_signing_secret=secret
+    )
 
 
 @router.get(

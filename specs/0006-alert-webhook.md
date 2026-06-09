@@ -95,8 +95,19 @@ class AlertService:
 
 ## Rollout
 
-- Migration: probably index additions on `alert(tenant_id, fingerprint, received_at DESC)` if not already present.
-- Observability: `aisre_webhook_received_total{tenant_id,outcome}`, `aisre_alert_ingested_total{tenant_id}`, `aisre_investigation_created_total{tenant_id}`, p95 latency histogram.
+- Migration: **required.** `alert` and `investigation` were modelled in ORM
+  but never migrated. Migration `0006_alert_investigation` creates both,
+  handling their circular FK (alert.investigation_id ↔
+  investigation.triggering_alert_id) by adding the alert→investigation FK
+  after both tables exist. `investigation_stage`/`tool_call` are left to the
+  orchestrator spec (0007).
+- Webhook secret: generated on Prometheus integration creation and returned
+  once in the create response; rotate via
+  `POST /v1/integrations/{id}/webhook-secret`.
+- Observability: ingestion emits structured logs (`alert.investigation_created`
+  / `alert.linked_to_investigation`). The Prometheus counters
+  (`aisre_webhook_received_total`, …) are deferred to spec 0017 (no `/metrics`
+  scaffolding yet), consistent with specs 0005/0006 so far.
 
 ## Definition of done
 
