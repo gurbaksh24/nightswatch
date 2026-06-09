@@ -38,6 +38,8 @@ from ai_sre.core.service.repository import (
 from ai_sre.core.service.topology_service import TopologyService
 from ai_sre.core.tenant.repository import TenantRepository
 from ai_sre.db import get_sessionmaker
+from ai_sre.llm.gateway import LLMGateway
+from ai_sre.llm.providers.anthropic import AnthropicProvider
 from ai_sre.models.investigation import Investigation
 from ai_sre.utils.crypto import EnvelopeEncryptionService
 from ai_sre.utils.logging import get_logger
@@ -72,6 +74,18 @@ def _build_connector_registry() -> ConnectorRegistry:
         max_points=settings.prom_max_points,
         max_series=settings.prom_max_series,
     )
+
+
+def _build_gateway() -> LLMGateway | None:
+    """Build the LLM gateway from settings, or ``None`` when no provider key
+    is configured (the 0007/0008 stub stages don't call it, so keyless local
+    runs still work)."""
+    settings = get_settings()
+    api_key = settings.llm_api_key.get_secret_value()
+    if not api_key or settings.llm_provider != "anthropic":
+        return None
+    provider = AnthropicProvider(api_key=api_key, model=settings.llm_model)
+    return LLMGateway(provider)
 
 
 def _build_investigation_pipeline(
@@ -114,7 +128,9 @@ async def run_investigation(investigation_id: str) -> None:
         repo = InvestigationRepository(session, inv.tenant_id)
         alert_repo = AlertRepository(session, inv.tenant_id)
         orchestrator = InvestigationOrchestrator(
-            _build_investigation_pipeline(repo, alert_repo), repo
+            _build_investigation_pipeline(repo, alert_repo),
+            repo,
+            gateway=_build_gateway(),
         )
         await orchestrator.run(inv_uuid)
         await session.commit()

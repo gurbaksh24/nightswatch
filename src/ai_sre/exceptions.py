@@ -119,6 +119,12 @@ class LLMResponseInvalid(LLMError):
     code = "llm.invalid_response"
 
 
+class LLMTransientError(LLMError):
+    """A transient provider failure (429/503/overloaded) worth retrying."""
+
+    code = "llm.transient"
+
+
 # ---- Delivery ----
 class DeliveryError(AISREError):
     code = "delivery.error"

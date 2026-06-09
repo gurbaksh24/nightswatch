@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ai_sre.core._base.repository import TenantScopedRepository
-from ai_sre.models.investigation import Investigation, InvestigationStage
+from ai_sre.models.investigation import Investigation, InvestigationStage, ToolCall
 
 # An alert dedupes onto an investigation in any of these states. A `failed`
 # investigation is intentionally excluded — a repeat alert should start a
@@ -185,3 +185,44 @@ class InvestigationRepository(TenantScopedRepository[Investigation]):
         stmt = stmt.order_by(Investigation.created_at.desc())
         result = await self.session.execute(stmt)
         return result.scalars().all()
+
+
+class ToolCallRepository(TenantScopedRepository[ToolCall]):
+    """Tenant-scoped persistence of LLM tool-call audit rows (spec 0008).
+
+    Structurally satisfies ``ai_sre.llm.tools.ToolCallStore`` so the dispatcher
+    (in ``llm/``) can persist without importing ``core/``.
+    """
+
+    model = ToolCall
+
+    def __init__(self, session: AsyncSession, tenant_id: UUID) -> None:
+        super().__init__(session, tenant_id)
+
+    async def record(
+        self,
+        *,
+        investigation_id: UUID,
+        stage_id: UUID | None,
+        tool_name: str,
+        input: dict[str, Any],
+        output: dict[str, Any] | None,
+        latency_ms: int,
+        outcome: str,
+        error: dict[str, Any] | None,
+    ) -> None:
+        """Insert one tool_call row. ``stage_id`` is required by the schema —
+        tool calls always happen inside a stage."""
+        row = ToolCall(
+            tenant_id=self.tenant_id,
+            investigation_id=investigation_id,
+            stage_id=stage_id,
+            tool_name=tool_name,
+            input=input,
+            output=output,
+            latency_ms=latency_ms,
+            outcome=outcome,
+            error=error,
+        )
+        self.session.add(row)
+        await self.session.flush()

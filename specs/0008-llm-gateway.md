@@ -106,9 +106,16 @@ class ToolDispatcher:
 
 ## Rollout
 
-- Migration: none.
-- Env vars: `AI_SRE_LLM_API_KEY` must be set in any env that calls a real provider; tests use the fake.
-- Observability: `aisre_llm_tokens_total{provider,model,direction}`, `aisre_llm_cost_usd_total`, `aisre_tool_calls_total{tool,outcome}`, per-call OTel span.
+- Migration: **required after all** — `tool_call` was modelled in ORM but never
+  migrated, and the ToolDispatcher persists to it. Migration `0008_tool_call`
+  creates it (FKs to `investigation` + `investigation_stage`).
+- Env vars: `AI_SRE_LLM_API_KEY` must be set in any env that calls a real
+  provider; with no key the worker builds no gateway (the 0007/0008 stub stages
+  don't call it) and tests use `FakeLLMProvider`.
+- Observability: the gateway records tokens/cost on the budget and the
+  dispatcher records `tool_call` rows. Prometheus counters + OTel spans are
+  deferred to spec 0017 (no `/metrics` scaffolding yet), consistent with
+  specs 0005–0007.
 
 ## Definition of done
 

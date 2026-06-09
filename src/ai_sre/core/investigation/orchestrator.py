@@ -33,9 +33,11 @@ from ai_sre.config import get_settings
 from ai_sre.core.alert.repository import AlertRepository
 from ai_sre.core.investigation.budget import Budget
 from ai_sre.core.investigation.context import InvestigationContext
+from ai_sre.core.investigation.repository import ToolCallRepository
 from ai_sre.core.service.repository import ServiceRepository
 from ai_sre.core.tenant.context import TenantContext
 from ai_sre.exceptions import BudgetExhausted
+from ai_sre.llm.tools import REGISTRY, ToolDispatcher
 from ai_sre.models.alert import Alert
 from ai_sre.models.service import Service
 from ai_sre.models.tenant import Tenant
@@ -44,6 +46,7 @@ from ai_sre.utils.logging import get_logger
 if TYPE_CHECKING:
     from ai_sre.core.investigation.pipeline import Pipeline, Stage
     from ai_sre.core.investigation.repository import InvestigationRepository
+    from ai_sre.llm.gateway import LLMGateway
 
 logger = get_logger(__name__)
 
@@ -86,10 +89,14 @@ class InvestigationOrchestrator:
         self,
         pipeline: Pipeline,
         repo: InvestigationRepository,
+        gateway: LLMGateway | None = None,
         # delivery: DeliveryDispatcher,   # added in spec 0010
     ) -> None:
         self.pipeline = pipeline
         self.repo = repo
+        # Injected so the LLM stages (0009+) can chat()/tool_loop(). Stubs
+        # don't use it yet; may be None when no provider key is configured.
+        self.gateway = gateway
 
     async def run(self, investigation_id: UUID) -> None:
         """Run the full pipeline for a single investigation. Safe to retry."""
@@ -160,6 +167,11 @@ class InvestigationOrchestrator:
             metric_catalog={},
             budget=budget,
         )
+        # Wire the LLM collaborators the stages will use (0009+). The
+        # dispatcher persists tool_call rows via a tenant-scoped repository.
+        ctx.gateway = self.gateway
+        ctx.dispatcher = ToolDispatcher(REGISTRY, ToolCallRepository(session, tenant_id))
+
         # Restore completed stages for idempotent resume.
         for name in await self.repo.get_completed_stage_names(inv.id):
             ctx.mark_completed(name)
@@ -171,6 +183,14 @@ class InvestigationOrchestrator:
         log = logger.bind(investigation_id=str(ctx.investigation_id), stage=stage.name)
         started = datetime.now(UTC)
         log.info("stage.start")
+        # Persist a `running` row up front so tool calls made during the stage
+        # can reference its id (tool_call.stage_id). It's updated to the final
+        # status below. Only `succeeded` rows count for resume, so a leftover
+        # `running` row is simply re-run.
+        running = await self.repo.upsert_stage(
+            ctx.investigation_id, name=stage.name, status="running", started_at=started
+        )
+        ctx.current_stage_id = running.id
         try:
             result = await asyncio.wait_for(
                 stage.execute(ctx), timeout=stage.timeout_seconds
