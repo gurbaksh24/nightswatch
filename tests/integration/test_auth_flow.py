@@ -159,3 +159,40 @@ async def test_duplicate_slug_returns_409(client: AsyncClient) -> None:
     assert resp.status_code == 409
     body = resp.json()
     assert body["detail"]["code"] == "tenant.slug_taken"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_patch_tenant_updates_name(client: AsyncClient) -> None:
+    """Regression: PATCH /v1/tenant must return 200, not 500.
+
+    ``updated_at`` (onupdate=func.now()) is expired after the UPDATE flush;
+    the repository must refresh the row so the route can serialize it without
+    triggering a lazy load in a sync context (MissingGreenlet → 500).
+    """
+    from uuid import UUID
+
+    from ai_sre.core.tenant.api_key_service import ApiKeyService
+    from ai_sre.core.tenant.repository import ApiKeyRepository, TenantRepository
+    from ai_sre.db import session_scope
+
+    resp = await client.post(
+        "/v1/tenant", json={"name": "Acme", "slug": "acme"}, headers=_admin_headers()
+    )
+    assert resp.status_code == 201, resp.text
+    tenant = resp.json()
+
+    async with session_scope() as session:
+        keys = ApiKeyService(ApiKeyRepository(session), TenantRepository(session))
+        issued = await keys.issue(UUID(tenant["id"]), name="bootstrap")
+
+    resp = await client.patch(
+        "/v1/tenant",
+        json={"name": "Acme Renamed"},
+        headers=_tenant_headers(issued.key),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["name"] == "Acme Renamed"
+    assert body["id"] == tenant["id"]
+    assert body["updated_at"]  # present + serializable (the regression point)
