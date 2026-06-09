@@ -21,8 +21,14 @@ from ai_sre.config import get_settings
 from ai_sre.connectors.registry import ConnectorRegistry
 from ai_sre.core.integration.repository import IntegrationRepository
 from ai_sre.core.integration.service import IntegrationService
-from ai_sre.core.service.repository import ServiceRepository
+from ai_sre.core.service.catalog_service import CatalogService
+from ai_sre.core.service.repository import (
+    MetricCatalogRepository,
+    ServiceDependencyRepository,
+    ServiceRepository,
+)
 from ai_sre.core.service.service import ServiceService
+from ai_sre.core.service.topology_service import TopologyService
 from ai_sre.core.tenant.api_key_service import ApiKeyService
 from ai_sre.core.tenant.context import TenantContext
 from ai_sre.core.tenant.repository import ApiKeyRepository, TenantRepository
@@ -37,12 +43,14 @@ __all__ = [
     "admin_only",
     "current_tenant",
     "get_api_key_service",
+    "get_catalog_service",
     "get_connector_registry",
     "get_integration_service",
     "get_job_queue",
     "get_service_service",
     "get_session",
     "get_tenant_service",
+    "get_topology_service",
 ]
 
 
@@ -190,3 +198,29 @@ def get_service_service(
     """
     repo = ServiceRepository(session, tenant.tenant_id)
     return ServiceService(repo, connector_registry)
+
+
+def get_catalog_service(
+    tenant: TenantContext = Depends(current_tenant),
+    session: AsyncSession = Depends(get_session),
+    connector_registry: ConnectorRegistry = Depends(get_connector_registry),
+) -> CatalogService:
+    """FastAPI dependency that constructs a :class:`CatalogService`."""
+    return CatalogService(
+        ServiceRepository(session, tenant.tenant_id),
+        MetricCatalogRepository(session, tenant.tenant_id),
+        connector_registry,
+    )
+
+
+def get_topology_service(
+    tenant: TenantContext = Depends(current_tenant),
+    session: AsyncSession = Depends(get_session),
+    connector_registry: ConnectorRegistry = Depends(get_connector_registry),
+) -> TopologyService:
+    """FastAPI dependency that constructs a :class:`TopologyService`."""
+    return TopologyService(
+        ServiceRepository(session, tenant.tenant_id),
+        ServiceDependencyRepository(session, tenant.tenant_id),
+        connector_registry,
+    )

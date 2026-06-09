@@ -34,6 +34,8 @@ logger = get_logger(__name__)
 _KIND_TO_TASK_NAME: dict[str, str] = {
     "investigation": "run_investigation",
     "health_check": "run_health_check",
+    "metric_catalog_refresh": "run_metric_catalog_refresh",
+    "topology_refresh": "run_topology_refresh",
     # Add new kinds here as they're introduced. The matching task is
     # registered in workers/app.py.
 }

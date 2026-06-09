@@ -98,3 +98,19 @@ class MetricEntryResponse(BaseModel):
     metric_type: str
     labels: dict[str, Any]
     unit: str | None = None
+
+
+class DependencyConfirmation(BaseModel):
+    """A single edit in ``PATCH /v1/services/{id}/topology``."""
+
+    dependency_id: UUID
+    confirmed_by_user: bool
+
+
+class TopologyUpdateRequest(BaseModel):
+    """Body for ``PATCH /v1/services/{id}/topology``.
+
+    Confirm (or un-confirm) discovered dependency edges by id.
+    """
+
+    edits: list[DependencyConfirmation] = Field(min_length=1)
