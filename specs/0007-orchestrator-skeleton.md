@@ -98,8 +98,14 @@ class InvestigationOrchestrator:
 
 ## Rollout
 
-- Migration: maybe index on `investigation_stage(investigation_id, name)` if not present.
-- Observability: span per stage (OTel), `aisre_investigation_duration_seconds{stage,outcome}`, `aisre_investigation_status_total{status}`.
+- Migration: **required.** `investigation_stage` was modelled in ORM but never
+  migrated. Migration `0007_investigation_stage` creates it (UNIQUE on
+  `(investigation_id, name, attempt)` makes the orchestrator's per-stage upsert
+  idempotent). `tool_call`/`report` stay deferred to the specs that write them.
+- Observability: the orchestrator emits structured logs per stage
+  (`stage.start` / `stage.complete` / `stage.timeout` / `stage.error`,
+  `orchestrator.*`). OTel spans + Prometheus counters are deferred to spec 0017
+  (no `/metrics` scaffolding yet), consistent with specs 0005/0006.
 
 ## Definition of done
 

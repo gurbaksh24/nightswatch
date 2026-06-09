@@ -32,16 +32,26 @@ class ReportStage:
 
     async def execute(self, ctx: InvestigationContext) -> StageResult:
         ctx.budget.assert_within_wall()
-        # ctx.budget.assert_can_call_llm()    # we still try even on partial
-        # TODO(spec-NNNN: report-stage):
-        #   1. Build prompt from ctx (validated hypotheses, fallback to hypotheses,
-        #      fallback to context, fallback to "we received your alert but ...").
-        #   2. Call llm.chat(response_format=ReportSchema).
-        #   3. Parse into Report.
+
+        # Spec 0007: deterministic placeholder assembled from whatever the
+        # (stub) earlier stages produced. The structured-output LLM call lands
+        # in spec 0012. Prefer validated hypotheses, fall back to raw ones.
+        hypotheses = ctx.validated or ctx.hypotheses
+        alert_name = ctx.alert.get("alert_name", "alert")
+        classification = ctx.triage.classification if ctx.triage else "novel"
+        headline = f"Received '{alert_name}' (triage: {classification}) — diagnosis pending real stages."
+
         ctx.report = Report(
-            headline="Stub report",
+            headline=headline,
             confidence="low",
+            hypotheses=[
+                {"statement": getattr(h, "statement", str(h))} for h in hypotheses
+            ],
             prompt_version="0.0.1",
             code_version="dev",
         )
-        return StageResult(name=self.name, status="succeeded")
+        return StageResult(
+            name=self.name,
+            status="succeeded",
+            output={"headline": headline, "confidence": "low"},
+        )

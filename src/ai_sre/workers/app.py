@@ -19,7 +19,16 @@ from procrastinate import App, PsycopgConnector
 
 from ai_sre.config import get_settings
 from ai_sre.connectors.registry import ConnectorRegistry
+from ai_sre.core.alert.repository import AlertRepository
 from ai_sre.core.integration.repository import IntegrationRepository
+from ai_sre.core.investigation.orchestrator import InvestigationOrchestrator
+from ai_sre.core.investigation.pipeline import Pipeline
+from ai_sre.core.investigation.repository import InvestigationRepository
+from ai_sre.core.investigation.stages.context_assembly import ContextAssemblyStage
+from ai_sre.core.investigation.stages.hypothesis import HypothesisStage
+from ai_sre.core.investigation.stages.report import ReportStage
+from ai_sre.core.investigation.stages.triage import TriageStage
+from ai_sre.core.investigation.stages.validation import ValidationStage
 from ai_sre.core.service.catalog_service import CatalogService
 from ai_sre.core.service.repository import (
     MetricCatalogRepository,
@@ -29,6 +38,7 @@ from ai_sre.core.service.repository import (
 from ai_sre.core.service.topology_service import TopologyService
 from ai_sre.core.tenant.repository import TenantRepository
 from ai_sre.db import get_sessionmaker
+from ai_sre.models.investigation import Investigation
 from ai_sre.utils.crypto import EnvelopeEncryptionService
 from ai_sre.utils.logging import get_logger
 
@@ -64,20 +74,58 @@ def _build_connector_registry() -> ConnectorRegistry:
     )
 
 
-@procrastinate_app.task(name="run_investigation", queue="investigations", retry=3)
-async def run_investigation_task(investigation_id: str) -> None:
-    """Procrastinate-side entrypoint. Hands off to the orchestrator.
+def _build_investigation_pipeline(
+    repo: InvestigationRepository, alert_repo: AlertRepository
+) -> Pipeline:
+    """Compose the MVP pipeline. TriageStage gets DB access (known-issue +
+    noise lookups); the remaining stages are deterministic stubs until their
+    own specs (0009/0011/0012)."""
+    return Pipeline(
+        stages=(
+            TriageStage(repo, alert_repo),
+            ContextAssemblyStage(),
+            HypothesisStage(),
+            ValidationStage(),
+            ReportStage(),
+        )
+    )
 
-    The orchestrator is the source of truth for what work needs doing; this
-    function only resolves dependencies and calls ``run(...)``. Stage-level
-    idempotency in the orchestrator makes Procrastinate retries safe.
 
-    Implementation tracked by spec 0007.
+async def run_investigation(investigation_id: str) -> None:
+    """Run one investigation through the orchestrator.
+
+    Extracted from the task wrapper so tests can drive it directly. Resolves
+    the tenant from the investigation id (the queue message carries only the
+    id) via an unscoped bootstrap load, then builds tenant-scoped repos and
+    runs the pipeline. The orchestrator's stage-level idempotency makes
+    Procrastinate retries safe.
     """
     log = logger.bind(investigation_id=investigation_id)
-    log.info("worker.run_investigation.start")
-    _ = UUID(investigation_id)
-    raise NotImplementedError
+    inv_uuid = UUID(investigation_id)
+
+    sm = get_sessionmaker()
+    async with sm() as session:
+        # Bootstrap: discover the tenant. Unscoped by necessity — same role as
+        # the auth find_by_hash lookup. Everything after is tenant-scoped.
+        inv = await session.get(Investigation, inv_uuid)
+        if inv is None:
+            log.warning("worker.run_investigation.not_found")
+            return
+        repo = InvestigationRepository(session, inv.tenant_id)
+        alert_repo = AlertRepository(session, inv.tenant_id)
+        orchestrator = InvestigationOrchestrator(
+            _build_investigation_pipeline(repo, alert_repo), repo
+        )
+        await orchestrator.run(inv_uuid)
+        await session.commit()
+
+    log.info("worker.run_investigation.complete")
+
+
+@procrastinate_app.task(name="run_investigation", queue="investigations", retry=3)
+async def run_investigation_task(investigation_id: str) -> None:
+    """Procrastinate-side entrypoint. Thin wrapper over :func:`run_investigation`."""
+    await run_investigation(investigation_id)
 
 
 async def run_health_check(tenant_id: str, integration_id: str) -> None:

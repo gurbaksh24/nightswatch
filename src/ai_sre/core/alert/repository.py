@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ai_sre.core._base.repository import TenantScopedRepository
@@ -59,3 +60,20 @@ class AlertRepository(TenantScopedRepository[Alert]):
         """Link an already-persisted alert to an investigation."""
         alert.investigation_id = investigation_id
         await self.session.flush()
+
+    async def count_by_fingerprint(self, fingerprint: str, *, since: datetime) -> int:
+        """Count alert rows for a fingerprint received at/after ``since``.
+
+        Used by Triage's flap/noise heuristic — flapping shows up as many
+        alert rows even when dedup collapses them onto one investigation.
+        """
+        stmt = (
+            select(func.count())
+            .select_from(Alert)
+            .where(
+                Alert.tenant_id == self.tenant_id,
+                Alert.fingerprint == fingerprint,
+                Alert.received_at >= since,
+            )
+        )
+        return int((await self.session.execute(stmt)).scalar_one())
