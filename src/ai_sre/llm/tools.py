@@ -1,24 +1,26 @@
-"""Tool registry.
+"""Tool registry + dispatcher.
 
-A `ToolSpec` is the full description of one tool the LLM can call. The
-registry maps names to specs and provides a per-stage filter.
+A ``ToolSpec`` fully describes a tool the LLM can call. The ``ToolRegistry``
+maps names to specs and filters by stage. The ``ToolDispatcher`` runs a tool
+on the model's behalf: it validates input, invokes the handler, and persists a
+``tool_call`` audit row (FR-5.3) via a ``ToolCallStore``.
 
-Adding a tool:
+Module boundary: this file lives in ``llm/`` and must NOT import ``core/``.
+Persistence is therefore expressed as the structural ``ToolCallStore``
+Protocol; the concrete tenant-scoped ``ToolCallRepository`` (in ``core/``)
+satisfies it, and the composition root wires them together.
 
-    REGISTRY.register(ToolSpec(
-        name="query_prometheus",
-        description="Run a typed PromQL query against the tenant's Prometheus.",
-        input_schema={...JSON Schema...},
-        handler=my_handler,
-        allowed_stages={"hypothesis", "validation"},
-    ))
+Adding a tool: define a ``ToolSpec``, ``register`` it, and (optionally) scope
+it to stages via ``allowed_stages``. Real tools ship from spec 0009.
 """
 
 from __future__ import annotations
 
+import time
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from uuid import UUID
 
 if TYPE_CHECKING:
     from ai_sre.core.investigation.context import InvestigationContext
@@ -38,7 +40,28 @@ class ToolSpec:
     allowed_stages: frozenset[str] = field(default_factory=frozenset)
 
 
-class _Registry:
+@runtime_checkable
+class ToolCallStore(Protocol):
+    """Persistence seam for tool-call audit rows. Implemented in ``core/`` by
+    ``ToolCallRepository`` so ``llm/`` needn't import ``core/``."""
+
+    async def record(
+        self,
+        *,
+        investigation_id: UUID,
+        stage_id: UUID | None,
+        tool_name: str,
+        input: dict[str, Any],
+        output: dict[str, Any] | None,
+        latency_ms: int,
+        outcome: str,
+        error: dict[str, Any] | None,
+    ) -> None: ...
+
+
+class ToolRegistry:
+    """Name → ToolSpec, with a per-stage filter."""
+
     def __init__(self) -> None:
         self._tools: dict[str, ToolSpec] = {}
 
@@ -51,49 +74,104 @@ class _Registry:
         return self._tools[name]
 
     def for_stage(self, stage: str) -> list[ToolSpec]:
-        return [t for t in self._tools.values() if not t.allowed_stages or stage in t.allowed_stages]
+        return [
+            t
+            for t in self._tools.values()
+            if not t.allowed_stages or stage in t.allowed_stages
+        ]
 
     def names(self) -> Iterable[str]:
         return self._tools.keys()
 
 
-REGISTRY = _Registry()
+REGISTRY = ToolRegistry()
 
 
 class ToolDispatcher:
-    """Routes a tool-call request from the LLM to the right handler."""
+    """Runs a tool the model asked for and records the call.
 
-    def __init__(self, registry: _Registry = REGISTRY) -> None:
+    ``dispatch`` never raises for tool-level failures (unknown tool, bad
+    input, handler exception); it records ``outcome="error"`` and returns an
+    error envelope so the model can recover. Each call (success or error) is
+    persisted via the store when one is configured.
+    """
+
+    def __init__(self, registry: ToolRegistry, store: ToolCallStore | None = None) -> None:
         self.registry = registry
+        self.store = store
 
     async def dispatch(
-        self, tool_call: dict[str, Any], ctx: InvestigationContext
+        self, name: str, input: dict[str, Any], ctx: InvestigationContext
     ) -> ToolOutput:
-        name = tool_call.get("name")
-        if not name:
-            raise ValueError("tool_call missing 'name'")
-        spec = self.registry.get(name)
-        input_ = tool_call.get("input", {})
-        # TODO(spec-NNNN: tool-dispatcher):
-        #   - jsonschema validate input against spec.input_schema
-        #   - call spec.handler(input_, ctx)
-        #   - on exception, return structured error so LLM can retry
-        return await spec.handler(input_, ctx)
+        started = time.monotonic()
+
+        try:
+            spec = self.registry.get(name)
+        except KeyError:
+            return await self._finish(
+                ctx, name, input, started,
+                output=None, outcome="error",
+                error={"type": "unknown_tool", "message": f"Unknown tool {name!r}."},
+            )
+
+        missing = [k for k in spec.input_schema.get("required", []) if k not in input]
+        if missing:
+            return await self._finish(
+                ctx, name, input, started,
+                output=None, outcome="error",
+                error={"type": "invalid_input", "message": f"Missing required: {missing}"},
+            )
+
+        try:
+            output = await spec.handler(input, ctx)
+        except Exception as exc:
+            return await self._finish(
+                ctx, name, input, started,
+                output=None, outcome="error",
+                error={"type": type(exc).__name__, "message": str(exc)},
+            )
+
+        return await self._finish(
+            ctx, name, input, started, output=output, outcome="success", error=None
+        )
+
+    async def _finish(
+        self,
+        ctx: InvestigationContext,
+        name: str,
+        input: dict[str, Any],
+        started: float,
+        *,
+        output: dict[str, Any] | None,
+        outcome: str,
+        error: dict[str, Any] | None,
+    ) -> ToolOutput:
+        latency_ms = int((time.monotonic() - started) * 1000)
+        if self.store is not None:
+            await self.store.record(
+                investigation_id=ctx.investigation_id,
+                stage_id=ctx.current_stage_id,
+                tool_name=name,
+                input=input,
+                output=output,
+                latency_ms=latency_ms,
+                outcome=outcome,
+                error=error,
+            )
+        if outcome == "success":
+            return output if output is not None else {}
+        return {"error": error}
 
 
 # --------------------------------------------------------------------------
-# Tool definitions. Each handler is implemented as part of its own spec.
+# Tool definitions. Handlers are implemented in their own specs (0009+).
 # --------------------------------------------------------------------------
 
 
 async def _query_prometheus_handler(
     input_: ToolInput, ctx: InvestigationContext
 ) -> ToolOutput:
-    """Bridge the LLM's tool call to the Prometheus connector.
-
-    See `connectors/prometheus/queries.py` for the typed intent → PromQL map.
-    """
-    # TODO(spec-NNNN: tool-query-prometheus)
+    """Bridge the LLM's tool call to the Prometheus connector (spec 0009)."""
     raise NotImplementedError
 
 
@@ -130,7 +208,8 @@ def _build_query_prometheus_schema() -> dict[str, Any]:
 
 
 def register_builtin_tools() -> None:
-    """Register the built-in tools. Called at app startup."""
+    """Register the built-in tools. Called at app startup from spec 0009 once
+    the handlers are real (the query_prometheus handler is still a stub here)."""
     REGISTRY.register(
         ToolSpec(
             name="query_prometheus",
@@ -143,6 +222,3 @@ def register_builtin_tools() -> None:
             allowed_stages=frozenset({"hypothesis", "validation"}),
         )
     )
-    # TODO: register list_metric_names, get_service_dependencies,
-    #       get_recent_changes, search_runbooks, search_past_incidents,
-    #       get_alert_details — one spec each.

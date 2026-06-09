@@ -23,6 +23,8 @@ from uuid import UUID
 if TYPE_CHECKING:
     from ai_sre.api.deps import TenantContext
     from ai_sre.core.investigation.budget import Budget
+    from ai_sre.llm.gateway import LLMGateway
+    from ai_sre.llm.tools import ToolDispatcher
 
 
 # ---- Stage output types (loose for now; tighten per stage) ----
@@ -125,6 +127,13 @@ class InvestigationContext:
     # Audit trail (append-only from stages / tool dispatcher)
     tool_calls: list[ToolCallRecord] = field(default_factory=list)
     completed_stages: set[str] = field(default_factory=set)
+
+    # Injected collaborators + per-stage cursor. Set by the orchestrator; the
+    # LLM stages (0009+) read `gateway`/`dispatcher`, and the dispatcher uses
+    # `current_stage_id` to attribute tool_call rows to the running stage.
+    current_stage_id: UUID | None = None
+    gateway: LLMGateway | None = None
+    dispatcher: ToolDispatcher | None = None
 
     def has_completed(self, stage_name: str) -> bool:
         return stage_name in self.completed_stages
