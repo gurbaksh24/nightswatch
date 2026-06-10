@@ -199,6 +199,14 @@ class IntegrationService:
             if isinstance(auth, dict) and isinstance(auth.get("type"), str):
                 auth_type = auth["type"]
             return {"url_host": host, "auth_type": auth_type}
+        if kind == "slack":
+            # The bot token is the only secret; team/channel identifiers are
+            # safe to display.
+            return {
+                k: config[k]
+                for k in ("team_id", "team_name", "channel_id", "channel_name")
+                if k in config
+            }
         # Defensive: unknown kinds get an empty public view rather than
         # leaking arbitrary config. The API layer should never allow this
         # branch to fire (Literal["prometheus"] guard), but the service

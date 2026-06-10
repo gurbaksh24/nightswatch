@@ -13,6 +13,7 @@ See LLD §15.2.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
 from procrastinate import App, PsycopgConnector
@@ -21,6 +22,7 @@ from ai_sre.config import get_settings
 from ai_sre.connectors.registry import ConnectorRegistry
 from ai_sre.core.alert.repository import AlertRepository
 from ai_sre.core.integration.repository import IntegrationRepository
+from ai_sre.core.integration.service import IntegrationService
 from ai_sre.core.investigation.orchestrator import InvestigationOrchestrator
 from ai_sre.core.investigation.pipeline import Pipeline
 from ai_sre.core.investigation.repository import InvestigationRepository
@@ -38,6 +40,8 @@ from ai_sre.core.service.repository import (
 from ai_sre.core.service.topology_service import TopologyService
 from ai_sre.core.tenant.repository import TenantRepository
 from ai_sre.db import get_sessionmaker
+from ai_sre.delivery.dispatcher import DeliveryDispatcher
+from ai_sre.delivery.slack import SlackDelivery
 from ai_sre.llm.gateway import LLMGateway
 from ai_sre.llm.providers.anthropic import AnthropicProvider
 from ai_sre.models.investigation import Investigation
@@ -105,6 +109,48 @@ def _build_investigation_pipeline(
     )
 
 
+_slack_delivery: SlackDelivery | None = None
+
+
+def _get_slack_delivery() -> SlackDelivery:
+    """Process-wide SlackDelivery (one httpx client for the worker's life)."""
+    global _slack_delivery
+    if _slack_delivery is None:
+        _slack_delivery = SlackDelivery()
+    return _slack_delivery
+
+
+async def _resolve_delivery_configs(
+    session: Any, tenant_id: UUID
+) -> dict[str, dict[str, Any]]:
+    """Resolve the tenant's delivery channel configs (boundary work done here,
+    in the worker, not in the delivery layer). Returns ``{}`` if none / on any
+    failure — delivery is best-effort, never fatal to the investigation."""
+    try:
+        crypto = EnvelopeEncryptionService(
+            get_settings().tenant_encryption_key.get_secret_value()
+        )
+    except Exception as exc:  # invalid/missing key
+        logger.warning("worker.delivery.crypto_unavailable", error=str(exc))
+        return {}
+
+    service = IntegrationService(IntegrationRepository(session, tenant_id), crypto)
+    integrations = await service.list()
+    slack = next((i for i in integrations if i.kind == "slack"), None)
+    if slack is None:
+        return {}
+    try:
+        cfg = service.decrypt_config(slack)
+    except Exception as exc:
+        logger.warning("worker.delivery.decrypt_failed", error=str(exc))
+        return {}
+    channel_id = cfg.get("channel_id")
+    bot_token = cfg.get("bot_token")
+    if not channel_id or not bot_token:
+        return {}
+    return {"slack": {"channel_id": channel_id, "bot_token": bot_token}}
+
+
 async def run_investigation(investigation_id: str) -> None:
     """Run one investigation through the orchestrator.
 
@@ -136,11 +182,19 @@ async def run_investigation(investigation_id: str) -> None:
         except Exception as exc:
             log.warning("worker.run_investigation.no_connector_registry", error=str(exc))
             connector_registry = None
+        delivery_configs = await _resolve_delivery_configs(session, inv.tenant_id)
+        delivery_dispatcher = (
+            DeliveryDispatcher({"slack": _get_slack_delivery()})
+            if delivery_configs
+            else None
+        )
         orchestrator = InvestigationOrchestrator(
             _build_investigation_pipeline(repo, alert_repo),
             repo,
             gateway=_build_gateway(),
             connector_registry=connector_registry,
+            delivery_dispatcher=delivery_dispatcher,
+            delivery_configs=delivery_configs,
         )
         await orchestrator.run(inv_uuid)
         await session.commit()

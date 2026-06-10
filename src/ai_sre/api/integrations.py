@@ -15,17 +15,27 @@ Out-of-scope routes are kept as stubs; the spec that owns them fills them in:
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 from typing import Any
+from urllib.parse import quote
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import RedirectResponse
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ai_sre.api.deps import (
     TenantContext,
+    _get_envelope_crypto,
     current_tenant,
     get_integration_service,
     get_job_queue,
+    get_session,
 )
+from ai_sre.config import get_settings
+from ai_sre.core.integration.repository import IntegrationRepository
 from ai_sre.core.integration.service import IntegrationService
 from ai_sre.exceptions import IntegrationAlreadyExists, IntegrationNotFound
 from ai_sre.queue.base import JobQueue, JobQueueError
@@ -35,6 +45,40 @@ from ai_sre.schemas.integration import (
     IntegrationResponse,
     WebhookSecretResponse,
 )
+from ai_sre.utils.logging import get_logger
+
+logger = get_logger(__name__)
+
+_SLACK_AUTHORIZE_URL = "https://slack.com/oauth/v2/authorize"
+_SLACK_ACCESS_URL = "https://slack.com/api/oauth.v2.access"
+_SLACK_SCOPES = "chat:write,channels:read,incoming-webhook"
+
+
+def _sign_oauth_state(tenant_id: UUID) -> str:
+    """HMAC-signed state token carrying the tenant id (anti-CSRF)."""
+    secret = get_settings().slack_signing_secret.get_secret_value().encode("utf-8")
+    mac = hmac.new(secret, str(tenant_id).encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{tenant_id}:{mac}"
+
+
+def _verify_oauth_state(state: str) -> UUID | None:
+    """Recover + verify the tenant id from a state token, or ``None``."""
+    tenant_part, _, mac = state.partition(":")
+    if not tenant_part or not mac:
+        return None
+    expected = _sign_oauth_state_for(tenant_part)
+    if not hmac.compare_digest(expected, state):
+        return None
+    try:
+        return UUID(tenant_part)
+    except ValueError:
+        return None
+
+
+def _sign_oauth_state_for(tenant_part: str) -> str:
+    secret = get_settings().slack_signing_secret.get_secret_value().encode("utf-8")
+    mac = hmac.new(secret, tenant_part.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{tenant_part}:{mac}"
 
 router = APIRouter()
 
@@ -217,31 +261,101 @@ async def force_health_check(
 
 @router.get(
     "/integrations/slack/oauth/start",
-    summary="Start Slack OAuth (implemented in spec 0010).",
-    include_in_schema=False,
+    summary="Start Slack OAuth — redirects to Slack's consent screen.",
 )
 async def slack_oauth_start(
+    request: Request,
     tenant: TenantContext = Depends(current_tenant),
-) -> dict[str, Any]:
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail={
-            "code": "internal",
-            "message": "Slack OAuth ships in spec 0010 (Slack delivery).",
-        },
+) -> RedirectResponse:
+    """Redirect the tenant to Slack with an HMAC-signed state token."""
+    settings = get_settings()
+    redirect_uri = str(request.url_for("slack_oauth_callback"))
+    state = _sign_oauth_state(tenant.tenant_id)
+    url = (
+        f"{_SLACK_AUTHORIZE_URL}?client_id={quote(settings.slack_client_id)}"
+        f"&scope={quote(_SLACK_SCOPES)}"
+        f"&state={quote(state)}"
+        f"&redirect_uri={quote(redirect_uri)}"
     )
+    return RedirectResponse(url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
 
 
 @router.get(
     "/integrations/slack/oauth/callback",
-    summary="Slack OAuth callback (implemented in spec 0010).",
-    include_in_schema=False,
+    summary="Slack OAuth callback — exchanges the code and persists the integration.",
 )
-async def slack_oauth_callback() -> dict[str, Any]:
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail={
-            "code": "internal",
-            "message": "Slack OAuth ships in spec 0010 (Slack delivery).",
-        },
+async def slack_oauth_callback(
+    request: Request,
+    code: str | None = None,
+    state: str = "",
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Verify state, exchange the code for a bot token, and persist a Slack
+    integration (token encrypted; team/channel in the public config)."""
+    tenant_id = _verify_oauth_state(state)
+    if tenant_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "validation.failed", "message": "Invalid OAuth state."},
+        )
+    if not code:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "validation.failed", "message": "Missing authorization code."},
+        )
+
+    settings = get_settings()
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.post(
+            _SLACK_ACCESS_URL,
+            data={
+                "client_id": settings.slack_client_id,
+                "client_secret": settings.slack_client_secret.get_secret_value(),
+                "code": code,
+                "redirect_uri": str(request.url_for("slack_oauth_callback")),
+            },
+        )
+    data = resp.json()
+    if not data.get("ok"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "integration.error",
+                "message": f"Slack OAuth exchange failed: {data.get('error')}",
+            },
+        )
+
+    team = data.get("team") or {}
+    webhook = data.get("incoming_webhook") or {}
+    config = {
+        "bot_token": data.get("access_token", ""),
+        "team_id": team.get("id"),
+        "team_name": team.get("name"),
+        "channel_id": webhook.get("channel_id"),
+        "channel_name": webhook.get("channel"),
+    }
+
+    service = IntegrationService(
+        IntegrationRepository(session, tenant_id), _get_envelope_crypto()
     )
+    try:
+        row = await service.create(kind="slack", name="slack", config=config)
+    except IntegrationAlreadyExists as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": exc.code, "message": "Slack is already connected for this tenant."},
+        ) from exc
+
+    logger.info(
+        "integration.slack_connected",
+        tenant_id=str(tenant_id),
+        integration_id=str(row.id),
+        team_id=config["team_id"],
+        channel_id=config["channel_id"],
+    )
+    return {
+        "status": "connected",
+        "integration_id": str(row.id),
+        "team_id": config["team_id"],
+        "channel_id": config["channel_id"],
+    }
