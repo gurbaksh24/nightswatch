@@ -51,6 +51,7 @@ if TYPE_CHECKING:
     from ai_sre.connectors.registry import ConnectorRegistry
     from ai_sre.core.investigation.pipeline import Pipeline, Stage
     from ai_sre.core.investigation.repository import InvestigationRepository
+    from ai_sre.delivery.dispatcher import DeliveryDispatcher
     from ai_sre.llm.gateway import LLMGateway
 
 logger = get_logger(__name__)
@@ -96,7 +97,8 @@ class InvestigationOrchestrator:
         repo: InvestigationRepository,
         gateway: LLMGateway | None = None,
         connector_registry: ConnectorRegistry | None = None,
-        # delivery: DeliveryDispatcher,   # added in spec 0010
+        delivery_dispatcher: DeliveryDispatcher | None = None,
+        delivery_configs: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self.pipeline = pipeline
         self.repo = repo
@@ -104,6 +106,11 @@ class InvestigationOrchestrator:
         # May be None when no provider key / connector is configured.
         self.gateway = gateway
         self.connector_registry = connector_registry
+        # Delivery: the worker resolves the tenant's channel configs and
+        # injects them (boundary-clean — the orchestrator never looks up
+        # integrations). Both None when no channel is connected.
+        self.delivery_dispatcher = delivery_dispatcher
+        self.delivery_configs = delivery_configs
 
     async def run(self, investigation_id: UUID) -> None:
         """Run the full pipeline for a single investigation. Safe to retry."""
@@ -321,8 +328,26 @@ class InvestigationOrchestrator:
         )
 
     async def _dispatch_delivery(self, ctx: InvestigationContext) -> None:
-        # Delivery (Slack) lands in spec 0010; nothing to do yet.
-        logger.info(
-            "orchestrator.delivery_skipped",
-            investigation_id=str(ctx.investigation_id),
+        """Post the report to the tenant's configured channels (spec 0010).
+
+        No-op when there's no dispatcher/config (no channel connected) or no
+        report. Never raises — delivery failures are recorded as failed
+        receipts by the dispatcher and logged here.
+        """
+        log = logger.bind(investigation_id=str(ctx.investigation_id))
+        if (
+            self.delivery_dispatcher is None
+            or not self.delivery_configs
+            or ctx.report is None
+        ):
+            log.info("orchestrator.delivery_skipped")
+            return
+        receipts = await self.delivery_dispatcher.dispatch(
+            ctx.report, self.delivery_configs
+        )
+        delivered = sum(1 for r in receipts if r.success)
+        log.info(
+            "orchestrator.delivery_done",
+            channels=len(receipts),
+            delivered=delivered,
         )
