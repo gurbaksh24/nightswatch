@@ -58,12 +58,34 @@ class Hypothesis:
     initial_confidence: float = 0.5
 
 
-@dataclass
+@dataclass(frozen=True)
+class Evidence:
+    """One piece of evidence backing a validated hypothesis (FR-5.4).
+
+    ``source`` is where it came from (e.g. a tool name like
+    ``query_prometheus`` or ``reasoning``); ``detail`` is a short cite/snippet.
+    """
+
+    source: str
+    detail: str
+
+
+@dataclass(frozen=True)
 class ValidatedHypothesis:
-    hypothesis: Hypothesis
-    confidence: float
-    supporting_evidence: list[dict[str, Any]] = field(default_factory=list)
-    refuting_evidence: list[dict[str, Any]] = field(default_factory=list)
+    """A hypothesis after the Validation stage ran a confirming/refuting test.
+
+    ``confirmed`` is ``True``/``False``/``None`` (couldn't determine).
+    ``validated=False`` means the stage never got to it (budget exhausted) —
+    it carries its Hypothesis-stage confidence unchanged.
+    """
+
+    hypothesis_id: str
+    statement: str
+    confidence: str          # "low" | "medium" | "high"
+    confirmed: bool | None
+    evidence: list[Evidence] = field(default_factory=list)
+    reasoning: str = ""
+    validated: bool = True
 
 
 @dataclass

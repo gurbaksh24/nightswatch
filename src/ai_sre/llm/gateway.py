@@ -62,6 +62,9 @@ class LLMResponse:
     tokens_used: int = 0
     cost_usd: float = 0.0
     stop_reason: str = ""
+    # Set by tool_loop: every tool the loop actually dispatched (name + input
+    # + result), so stages can cite the tools they used as evidence.
+    dispatched_tool_calls: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -165,13 +168,14 @@ class LLMGateway:
         """
         messages: list[Message] = [Message(role="user", content=user)]
         resp = LLMResponse(text="")
+        dispatched: list[dict[str, Any]] = []
         try:
             for _ in range(max_iterations):
                 resp = await self.chat(
                     system=system, messages=messages, tools=tools, budget=budget
                 )
                 if not resp.tool_calls:
-                    return resp
+                    break
                 # Record the assistant's tool-call turn, then each result.
                 messages.append(
                     Message(
@@ -186,6 +190,9 @@ class LLMGateway:
                         call.get("name", ""), call.get("input", {}), ctx
                     )
                     budget.record_tool_call()
+                    dispatched.append(
+                        {"name": call.get("name", ""), "input": call.get("input", {}), "result": result}
+                    )
                     messages.append(
                         Message(
                             role="tool",
@@ -196,6 +203,7 @@ class LLMGateway:
         except BudgetExhausted:
             # Out of budget mid-loop — partial results are still useful.
             pass
+        resp.dispatched_tool_calls = dispatched
         return resp
 
     # ---- internals ----
