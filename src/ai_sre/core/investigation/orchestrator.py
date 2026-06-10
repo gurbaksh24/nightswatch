@@ -33,7 +33,7 @@ from ai_sre.config import get_settings
 from ai_sre.core.alert.repository import AlertRepository
 from ai_sre.core.investigation.budget import Budget
 from ai_sre.core.investigation.context import InvestigationContext
-from ai_sre.core.investigation.repository import ToolCallRepository
+from ai_sre.core.investigation.repository import ReportRepository, ToolCallRepository
 from ai_sre.core.service.repository import (
     MetricCatalogRepository,
     ServiceDependencyRepository,
@@ -293,7 +293,23 @@ class InvestigationOrchestrator:
 
     # ---- finalization ----
 
+    async def _persist_report(self, ctx: InvestigationContext) -> None:
+        """Persist ctx.report to the report table (one per investigation)."""
+        if ctx.report is None:
+            return
+        report = ctx.report
+        await ReportRepository(self.repo.session, self.repo.tenant_id).upsert(
+            ctx.investigation_id,
+            schema_version=report.schema_version,
+            headline=report.headline,
+            confidence=report.confidence,
+            hypotheses=report.hypotheses,
+            next_actions=report.next_actions,
+            related_incidents=report.related_incidents,
+        )
+
     async def _finalize(self, inv: Any, ctx: InvestigationContext) -> None:
+        await self._persist_report(ctx)
         confidence = ctx.report.confidence if ctx.report else "low"
         await self.repo.set_status(
             inv,
@@ -318,6 +334,7 @@ class InvestigationOrchestrator:
                     started_at=now,
                     completed_at=now,
                 )
+        await self._persist_report(ctx)
         confidence = ctx.report.confidence if ctx.report else "low"
         await self.repo.set_status(
             inv,

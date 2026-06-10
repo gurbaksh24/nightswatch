@@ -24,7 +24,10 @@ from ai_sre.core.alert.repository import AlertRepository
 from ai_sre.core.alert.service import AlertService
 from ai_sre.core.integration.repository import IntegrationRepository
 from ai_sre.core.integration.service import IntegrationService
-from ai_sre.core.investigation.repository import InvestigationRepository
+from ai_sre.core.investigation.repository import (
+    InvestigationRepository,
+    ReportRepository,
+)
 from ai_sre.core.service.catalog_service import CatalogService
 from ai_sre.core.service.repository import (
     MetricCatalogRepository,
@@ -52,7 +55,9 @@ __all__ = [
     "get_connector_registry",
     "get_integration_service",
     "get_integration_service_for_tenant",
+    "get_investigation_repo",
     "get_job_queue",
+    "get_report_repo",
     "get_service_service",
     "get_session",
     "get_tenant_service",
@@ -267,3 +272,19 @@ def get_alert_service(
         job_queue,
         dedupe_window_seconds=settings.inv_dedupe_window_seconds,
     )
+
+
+def get_investigation_repo(
+    tenant: TenantContext = Depends(current_tenant),
+    session: AsyncSession = Depends(get_session),
+) -> InvestigationRepository:
+    """Tenant-scoped InvestigationRepository for the read endpoints."""
+    return InvestigationRepository(session, tenant.tenant_id)
+
+
+def get_report_repo(
+    tenant: TenantContext = Depends(current_tenant),
+    session: AsyncSession = Depends(get_session),
+) -> ReportRepository:
+    """Tenant-scoped ReportRepository for the read endpoints."""
+    return ReportRepository(session, tenant.tenant_id)

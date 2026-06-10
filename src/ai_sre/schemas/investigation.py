@@ -20,9 +20,11 @@ class InvestigationSummary(BaseModel):
 
 
 class HypothesisOut(BaseModel):
+    # Robust to both the LLM report shape and the deterministic fallback.
     statement: str
-    confidence: str
-    evidence: list[dict[str, Any]]
+    confidence: str = "low"
+    confirmed: bool | None = None
+    evidence: list[dict[str, Any]] = []
 
 
 class ReportResponse(BaseModel):
@@ -37,6 +39,31 @@ class ReportResponse(BaseModel):
 
 class InvestigationDetail(InvestigationSummary):
     report: ReportResponse | None = None
+
+
+class StageTrace(BaseModel):
+    name: str
+    status: str
+    attempt: int
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    output: dict[str, Any] | None = None
+    error: dict[str, Any] | None = None
+
+
+class ToolCallTrace(BaseModel):
+    tool_name: str
+    input: dict[str, Any]
+    output: dict[str, Any] | None = None
+    outcome: str
+    latency_ms: int
+    created_at: datetime
+
+
+class TraceResponse(BaseModel):
+    investigation_id: UUID
+    stages: list[StageTrace]
+    tool_calls: list[ToolCallTrace]
 
 
 class BacktestRequest(BaseModel):

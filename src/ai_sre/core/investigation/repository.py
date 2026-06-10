@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ai_sre.core._base.repository import TenantScopedRepository
 from ai_sre.models.investigation import Investigation, InvestigationStage, ToolCall
+from ai_sre.models.report import Report
 
 # An alert dedupes onto an investigation in any of these states. A `failed`
 # investigation is intentionally excluded — a repeat alert should start a
@@ -185,6 +186,115 @@ class InvestigationRepository(TenantScopedRepository[Investigation]):
         stmt = stmt.order_by(Investigation.created_at.desc())
         result = await self.session.execute(stmt)
         return result.scalars().all()
+
+    # ---- read APIs (spec 0012) ----
+
+    async def list_filtered(
+        self,
+        *,
+        status: str | None = None,
+        service_id: UUID | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        confidence: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Sequence[Investigation]:
+        """List the tenant's investigations, newest first, with optional
+        filters. Time range is on ``created_at``."""
+        stmt = self._scoped(select(Investigation))
+        if status is not None:
+            stmt = stmt.where(Investigation.status == status)
+        if service_id is not None:
+            stmt = stmt.where(Investigation.service_id == service_id)
+        if confidence is not None:
+            stmt = stmt.where(Investigation.confidence == confidence)
+        if since is not None:
+            stmt = stmt.where(Investigation.created_at >= since)
+        if until is not None:
+            stmt = stmt.where(Investigation.created_at <= until)
+        stmt = (
+            stmt.order_by(Investigation.created_at.desc(), Investigation.id.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+    async def list_stages(self, investigation_id: UUID) -> Sequence[InvestigationStage]:
+        stmt = (
+            select(InvestigationStage)
+            .where(
+                InvestigationStage.tenant_id == self.tenant_id,
+                InvestigationStage.investigation_id == investigation_id,
+            )
+            .order_by(InvestigationStage.created_at)
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+    async def list_tool_calls(self, investigation_id: UUID) -> Sequence[ToolCall]:
+        stmt = (
+            select(ToolCall)
+            .where(
+                ToolCall.tenant_id == self.tenant_id,
+                ToolCall.investigation_id == investigation_id,
+            )
+            .order_by(ToolCall.created_at)
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+
+class ReportRepository(TenantScopedRepository[Report]):
+    """Tenant-scoped CRUD for the final RCA :class:`Report` (one per
+    investigation)."""
+
+    model = Report
+
+    def __init__(self, session: AsyncSession, tenant_id: UUID) -> None:
+        super().__init__(session, tenant_id)
+
+    async def get_for_investigation(self, investigation_id: UUID) -> Report | None:
+        stmt = self._scoped(select(Report)).where(
+            Report.investigation_id == investigation_id
+        )
+        return (await self.session.execute(stmt)).scalar_one_or_none()
+
+    async def upsert(
+        self,
+        investigation_id: UUID,
+        *,
+        schema_version: str,
+        headline: str,
+        confidence: str,
+        hypotheses: list[dict[str, Any]],
+        next_actions: list[dict[str, Any]],
+        related_incidents: list[dict[str, Any]],
+    ) -> Report:
+        """Insert or update the investigation's report (UNIQUE per investigation)."""
+        row = await self.get_for_investigation(investigation_id)
+        if row is None:
+            row = Report(
+                tenant_id=self.tenant_id,
+                investigation_id=investigation_id,
+                schema_version=schema_version,
+                headline=headline,
+                confidence=confidence,
+                hypotheses=hypotheses,
+                next_actions=next_actions,
+                related_incidents=related_incidents,
+            )
+            self.session.add(row)
+        else:
+            row.schema_version = schema_version
+            row.headline = headline
+            row.confidence = confidence
+            row.hypotheses = hypotheses
+            row.next_actions = next_actions
+            row.related_incidents = related_incidents
+        await self.session.flush()
+        return row
 
 
 class ToolCallRepository(TenantScopedRepository[ToolCall]):
