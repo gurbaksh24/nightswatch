@@ -43,3 +43,6 @@ class FakeLLMProvider(LLMProvider):
         if not self._responses:
             return LLMResponse(text="")
         return self._responses.popleft()
+
+    def estimate_cost(self, tokens: int) -> float:
+        return 0.0

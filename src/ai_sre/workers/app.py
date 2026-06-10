@@ -127,10 +127,20 @@ async def run_investigation(investigation_id: str) -> None:
             return
         repo = InvestigationRepository(session, inv.tenant_id)
         alert_repo = AlertRepository(session, inv.tenant_id)
+        # The connector registry lets the query_prometheus tool reach the
+        # tenant's Prometheus; it needs the envelope-encryption key. If that's
+        # missing/misconfigured, still run the investigation (Prometheus tools
+        # degrade to "no_connector") rather than failing the whole job.
+        try:
+            connector_registry = _build_connector_registry()
+        except Exception as exc:
+            log.warning("worker.run_investigation.no_connector_registry", error=str(exc))
+            connector_registry = None
         orchestrator = InvestigationOrchestrator(
             _build_investigation_pipeline(repo, alert_repo),
             repo,
             gateway=_build_gateway(),
+            connector_registry=connector_registry,
         )
         await orchestrator.run(inv_uuid)
         await session.commit()
