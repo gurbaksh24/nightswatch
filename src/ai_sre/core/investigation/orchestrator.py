@@ -34,16 +34,21 @@ from ai_sre.core.alert.repository import AlertRepository
 from ai_sre.core.investigation.budget import Budget
 from ai_sre.core.investigation.context import InvestigationContext
 from ai_sre.core.investigation.repository import ToolCallRepository
-from ai_sre.core.service.repository import ServiceRepository
+from ai_sre.core.service.repository import (
+    MetricCatalogRepository,
+    ServiceDependencyRepository,
+    ServiceRepository,
+)
 from ai_sre.core.tenant.context import TenantContext
 from ai_sre.exceptions import BudgetExhausted
-from ai_sre.llm.tools import REGISTRY, ToolDispatcher
+from ai_sre.llm.tools import REGISTRY, ToolDispatcher, register_builtin_tools
 from ai_sre.models.alert import Alert
 from ai_sre.models.service import Service
 from ai_sre.models.tenant import Tenant
 from ai_sre.utils.logging import get_logger
 
 if TYPE_CHECKING:
+    from ai_sre.connectors.registry import ConnectorRegistry
     from ai_sre.core.investigation.pipeline import Pipeline, Stage
     from ai_sre.core.investigation.repository import InvestigationRepository
     from ai_sre.llm.gateway import LLMGateway
@@ -90,13 +95,15 @@ class InvestigationOrchestrator:
         pipeline: Pipeline,
         repo: InvestigationRepository,
         gateway: LLMGateway | None = None,
+        connector_registry: ConnectorRegistry | None = None,
         # delivery: DeliveryDispatcher,   # added in spec 0010
     ) -> None:
         self.pipeline = pipeline
         self.repo = repo
-        # Injected so the LLM stages (0009+) can chat()/tool_loop(). Stubs
-        # don't use it yet; may be None when no provider key is configured.
+        # Injected so the LLM stages can chat()/tool_loop() and query_prometheus.
+        # May be None when no provider key / connector is configured.
         self.gateway = gateway
+        self.connector_registry = connector_registry
 
     async def run(self, investigation_id: UUID) -> None:
         """Run the full pipeline for a single investigation. Safe to retry."""
@@ -142,6 +149,38 @@ class InvestigationOrchestrator:
         service = await ServiceRepository(session, tenant_id).get_by_id(inv.service_id)
         tenant_row = await session.get(Tenant, tenant_id)
 
+        # Pre-load the catalog + topology so the (boundary-respecting) LLM
+        # tools can read them off the context without touching the DB.
+        catalog_rows = await MetricCatalogRepository(session, tenant_id).list_for_service(
+            inv.service_id, limit=1000
+        )
+        dep_rows = await ServiceDependencyRepository(session, tenant_id).list_for_service(
+            inv.service_id
+        )
+        metric_catalog: dict[str, Any] = {
+            "metrics": [
+                {
+                    "metric_name": r.metric_name,
+                    "metric_type": r.metric_type,
+                    "labels": r.labels,
+                    "unit": r.unit,
+                }
+                for r in catalog_rows
+            ]
+        }
+        dependencies: dict[str, Any] = {
+            "upstream": [
+                {"name": d.name, "confirmed_by_user": d.confirmed_by_user}
+                for d in dep_rows
+                if d.direction == "upstream"
+            ],
+            "downstream": [
+                {"name": d.name, "confirmed_by_user": d.confirmed_by_user}
+                for d in dep_rows
+                if d.direction == "downstream"
+            ],
+        }
+
         tenant_ctx = TenantContext(
             tenant_id=tenant_id,
             name=tenant_row.name if tenant_row else "",
@@ -163,13 +202,16 @@ class InvestigationOrchestrator:
             investigation_id=inv.id,
             alert=_alert_to_dict(alert),
             service=_service_to_dict(service),
-            dependencies={},
-            metric_catalog={},
+            dependencies=dependencies,
+            metric_catalog=metric_catalog,
             budget=budget,
         )
-        # Wire the LLM collaborators the stages will use (0009+). The
-        # dispatcher persists tool_call rows via a tenant-scoped repository.
+        # Wire the LLM collaborators the stages use. The dispatcher persists
+        # tool_call rows via a tenant-scoped repository; tools reach Prometheus
+        # via the connector registry.
+        register_builtin_tools(REGISTRY)  # idempotent
         ctx.gateway = self.gateway
+        ctx.connector_registry = self.connector_registry
         ctx.dispatcher = ToolDispatcher(REGISTRY, ToolCallRepository(session, tenant_id))
 
         # Restore completed stages for idempotent resume.

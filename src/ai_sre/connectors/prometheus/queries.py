@@ -10,6 +10,8 @@ goes through `parse_safe_promql` — a permissive-but-bounded validator.
 
 from __future__ import annotations
 
+import re
+
 from ai_sre.connectors.base import (
     Aggregation,
     ChangeOverTime,
@@ -57,18 +59,33 @@ def build(intent: QueryIntent) -> str:
 # ---- Safe-PromQL parser ----
 
 _FORBIDDEN_TOKENS = (
-    # Write paths and admin endpoints — we never want these in a query.
-    "absent_over_time(", "ALERTS{", "alertstate=",
-    # Cheap defence against extremely cardinality-heavy operations.
+    # Admin / alert-state endpoints — never legitimate in a diagnosis query.
+    "ALERTS{", "alertstate=",
+    # `count_values` explodes cardinality by minting a label per distinct value.
+    "count_values(",
 )
+
+# A `{` that starts a selector with no preceding metric name (start of string,
+# or right after `(`, `,`, whitespace, or `[`). These scan *all* series and are
+# the main cardinality / injection risk — e.g. `rate({job="x"}[5m])`.
+_BARE_SELECTOR = re.compile(r"(?:^|[\s(,\[])\{")
+
+# topk/bottomk without an explicit small integer bound (e.g. `topk by (...)` or
+# `topk(some_expr, ...)`): unbounded result sets.
+_UNBOUNDED_TOPK = re.compile(r"\b(?:topk|bottomk)\s*\(\s*(?![0-9])")
 
 
 def parse_safe_promql(q: str) -> str:
     """Validate a raw PromQL expression. Reject obvious red flags.
 
-    This is a coarse filter, not a full parser. The right long-term answer is
-    to use prometheus-go-bindings via grpc, but a string filter is sufficient
-    for MVP and adequately restricts the LLM's escape hatch.
+    A coarse string filter, not a full parser — but enough to make the LLM's
+    raw-PromQL escape hatch safe (NFR-5.6). The right long-term answer is the
+    prometheus query parser; this is sufficient for MVP. Rejects:
+
+        * empty / over-long queries,
+        * admin/alert-state and cardinality-bomb functions,
+        * bare ``{...}`` selectors with no metric name (full-series scans),
+        * ``topk``/``bottomk`` without a literal integer bound.
     """
     q = q.strip()
     if not q:
@@ -79,7 +96,22 @@ def parse_safe_promql(q: str) -> str:
     for tok in _FORBIDDEN_TOKENS:
         if tok.lower() in lower:
             raise ConnectorError(f"PromQL contains forbidden token: {tok!r}")
-    # Heuristic: bare `{...}` with no metric name causes huge cardinality scans.
-    if q.startswith("{"):
-        raise ConnectorError("PromQL must begin with a metric name.")
+    if q.startswith("{") or _BARE_SELECTOR.search(q):
+        raise ConnectorError(
+            "PromQL selectors must be anchored to a metric name (no bare {...})."
+        )
+    if _UNBOUNDED_TOPK.search(q):
+        raise ConnectorError("topk/bottomk requires a literal integer bound.")
     return q
+
+
+class PromQlBuilder:
+    """Object wrapper over the module functions (spec 0009 contract)."""
+
+    def build(self, intent: QueryIntent) -> str:
+        """Translate a typed intent into PromQL."""
+        return build(intent)
+
+    def validate_raw(self, raw: str) -> str:
+        """Validate raw PromQL; returns it unchanged or raises ConnectorError."""
+        return parse_safe_promql(raw)

@@ -22,6 +22,7 @@ from uuid import UUID
 
 if TYPE_CHECKING:
     from ai_sre.api.deps import TenantContext
+    from ai_sre.connectors.registry import ConnectorRegistry
     from ai_sre.core.investigation.budget import Budget
     from ai_sre.llm.gateway import LLMGateway
     from ai_sre.llm.tools import ToolDispatcher
@@ -134,6 +135,7 @@ class InvestigationContext:
     current_stage_id: UUID | None = None
     gateway: LLMGateway | None = None
     dispatcher: ToolDispatcher | None = None
+    connector_registry: ConnectorRegistry | None = None
 
     def has_completed(self, stage_name: str) -> bool:
         return stage_name in self.completed_stages

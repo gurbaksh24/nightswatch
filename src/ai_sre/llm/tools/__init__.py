@@ -1,17 +1,16 @@
-"""Tool registry + dispatcher.
+"""Tool registry + dispatcher, and the concrete-tool registration entrypoint.
 
 A ``ToolSpec`` fully describes a tool the LLM can call. The ``ToolRegistry``
 maps names to specs and filters by stage. The ``ToolDispatcher`` runs a tool
-on the model's behalf: it validates input, invokes the handler, and persists a
+on the model's behalf: validate input, invoke the handler, and persist a
 ``tool_call`` audit row (FR-5.3) via a ``ToolCallStore``.
 
-Module boundary: this file lives in ``llm/`` and must NOT import ``core/``.
-Persistence is therefore expressed as the structural ``ToolCallStore``
-Protocol; the concrete tenant-scoped ``ToolCallRepository`` (in ``core/``)
-satisfies it, and the composition root wires them together.
-
-Adding a tool: define a ``ToolSpec``, ``register`` it, and (optionally) scope
-it to stages via ``allowed_stages``. Real tools ship from spec 0009.
+Module boundary: this package lives in ``llm/`` and must NOT import ``core/``.
+Persistence is expressed as the structural ``ToolCallStore`` Protocol (the
+concrete ``ToolCallRepository`` in ``core/`` satisfies it). Concrete tools
+(``query_prometheus.py`` etc.) read what they need off the
+``InvestigationContext`` the orchestrator pre-populates, or use
+``ctx.connector_registry`` — never a ``core`` import.
 """
 
 from __future__ import annotations
@@ -42,8 +41,8 @@ class ToolSpec:
 
 @runtime_checkable
 class ToolCallStore(Protocol):
-    """Persistence seam for tool-call audit rows. Implemented in ``core/`` by
-    ``ToolCallRepository`` so ``llm/`` needn't import ``core/``."""
+    """Persistence seam for tool-call audit rows. ``ToolCallRepository`` in
+    ``core/`` satisfies this so ``llm/`` needn't import ``core/``."""
 
     async def record(
         self,
@@ -60,7 +59,7 @@ class ToolCallStore(Protocol):
 
 
 class ToolRegistry:
-    """Name → ToolSpec, with a per-stage filter."""
+    """Name -> ToolSpec, with a per-stage filter."""
 
     def __init__(self) -> None:
         self._tools: dict[str, ToolSpec] = {}
@@ -92,8 +91,7 @@ class ToolDispatcher:
 
     ``dispatch`` never raises for tool-level failures (unknown tool, bad
     input, handler exception); it records ``outcome="error"`` and returns an
-    error envelope so the model can recover. Each call (success or error) is
-    persisted via the store when one is configured.
+    error envelope so the model can recover.
     """
 
     def __init__(self, registry: ToolRegistry, store: ToolCallStore | None = None) -> None:
@@ -163,62 +161,21 @@ class ToolDispatcher:
         return {"error": error}
 
 
-# --------------------------------------------------------------------------
-# Tool definitions. Handlers are implemented in their own specs (0009+).
-# --------------------------------------------------------------------------
+def register_builtin_tools(registry: ToolRegistry = REGISTRY) -> None:
+    """Register the built-in tool set. Idempotent — safe to call per
+    investigation. Imports are local to avoid an import cycle (the tool
+    modules import ``ToolSpec`` from this package)."""
+    from ai_sre.llm.tools.get_alert_details import GET_ALERT_DETAILS
+    from ai_sre.llm.tools.get_service_dependencies import GET_SERVICE_DEPENDENCIES
+    from ai_sre.llm.tools.list_metric_names import LIST_METRIC_NAMES
+    from ai_sre.llm.tools.query_prometheus import QUERY_PROMETHEUS
 
-
-async def _query_prometheus_handler(
-    input_: ToolInput, ctx: InvestigationContext
-) -> ToolOutput:
-    """Bridge the LLM's tool call to the Prometheus connector (spec 0009)."""
-    raise NotImplementedError
-
-
-def _build_query_prometheus_schema() -> dict[str, Any]:
-    """JSON Schema for the LLM's `query_prometheus` tool call.
-
-    Mirrors the QueryIntent union in connectors/base.py.
-    """
-    return {
-        "type": "object",
-        "properties": {
-            "intent_kind": {
-                "type": "string",
-                "enum": [
-                    "rate_over_window",
-                    "aggregation",
-                    "percentile",
-                    "change_over_time",
-                    "raw_promql",
-                ],
-            },
-            "metric": {"type": "string"},
-            "labels": {"type": "object", "additionalProperties": {"type": "string"}},
-            "window_seconds": {"type": "integer", "minimum": 30, "maximum": 86400},
-            "percentile": {"type": "number", "minimum": 0, "maximum": 1},
-            "op": {"type": "string", "enum": ["sum", "avg", "max", "min", "count"]},
-            "by": {"type": "array", "items": {"type": "string"}},
-            "query": {"type": "string", "description": "Raw PromQL (only for raw_promql)"},
-            "start": {"type": "string", "format": "date-time"},
-            "end": {"type": "string", "format": "date-time"},
-        },
-        "required": ["intent_kind"],
-    }
-
-
-def register_builtin_tools() -> None:
-    """Register the built-in tools. Called at app startup from spec 0009 once
-    the handlers are real (the query_prometheus handler is still a stub here)."""
-    REGISTRY.register(
-        ToolSpec(
-            name="query_prometheus",
-            description=(
-                "Run a typed query against the tenant's Prometheus. Choose "
-                "`intent_kind` and fill the corresponding fields."
-            ),
-            input_schema=_build_query_prometheus_schema(),
-            handler=_query_prometheus_handler,
-            allowed_stages=frozenset({"hypothesis", "validation"}),
-        )
-    )
+    existing = set(registry.names())
+    for spec in (
+        QUERY_PROMETHEUS,
+        LIST_METRIC_NAMES,
+        GET_SERVICE_DEPENDENCIES,
+        GET_ALERT_DETAILS,
+    ):
+        if spec.name not in existing:
+            registry.register(spec)
