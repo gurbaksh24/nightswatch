@@ -9,7 +9,15 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -38,6 +46,17 @@ class Investigation(IdMixin, TenantOwnedMixin, TimestampMixin, Base):
     budget_snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     prompt_version: Mapped[str] = mapped_column(String(64), nullable=False, default="unknown")
     code_version: Mapped[str] = mapped_column(String(64), nullable=False, default="unknown")
+
+    # Backtest / replay (spec 0016). A backtest re-runs a (possibly historical)
+    # alert against the current system; `dry_run` suppresses delivery so it
+    # doesn't post to Slack. `replayed_from` links a replay to its origin.
+    is_backtest: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    dry_run: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    replayed_from: Mapped[UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("investigation.id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
 
 class InvestigationStage(IdMixin, TenantOwnedMixin, TimestampMixin, Base):

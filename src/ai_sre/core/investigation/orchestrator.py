@@ -252,6 +252,8 @@ class InvestigationOrchestrator:
             dependencies=dependencies,
             metric_catalog=metric_catalog,
             budget=budget,
+            is_backtest=bool(inv.is_backtest),
+            dry_run=bool(inv.dry_run),
         )
         # Wire the LLM collaborators the stages use. The dispatcher persists
         # tool_call rows via a tenant-scoped repository; tools reach Prometheus
@@ -414,6 +416,10 @@ class InvestigationOrchestrator:
         receipts by the dispatcher and logged here.
         """
         log = logger.bind(investigation_id=str(ctx.investigation_id))
+        if ctx.dry_run:
+            # Backtest dry run — never post to external channels (spec 0016).
+            log.info("orchestrator.delivery_skipped", reason="dry_run")
+            return
         if (
             self.delivery_dispatcher is None
             or not self.delivery_configs

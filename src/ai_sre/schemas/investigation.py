@@ -17,6 +17,9 @@ class InvestigationSummary(BaseModel):
     started_at: datetime | None = None
     completed_at: datetime | None = None
     fingerprint: str
+    is_backtest: bool = False
+    dry_run: bool = False
+    replayed_from: UUID | None = None
 
 
 class HypothesisOut(BaseModel):

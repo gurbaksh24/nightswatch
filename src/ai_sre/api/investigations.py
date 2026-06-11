@@ -13,22 +13,26 @@ See docs/05-api-spec.md §Investigations.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import ValidationError
 
 from ai_sre.api.deps import (
-    TenantContext,
-    current_tenant,
+    get_backtest_service,
     get_investigation_repo,
     get_report_repo,
 )
+from ai_sre.core.alert.service import AlertValidationError
+from ai_sre.core.investigation.backtest import BacktestService
 from ai_sre.core.investigation.repository import (
     InvestigationRepository,
     ReportRepository,
 )
+from ai_sre.exceptions import ServiceNotFound
+from ai_sre.schemas.alert import AlertmanagerPayload
 from ai_sre.schemas.investigation import (
+    BacktestRequest,
     InvestigationDetail,
     InvestigationSummary,
     ReportResponse,
@@ -140,26 +144,58 @@ async def get_investigation_trace(
 
 
 @router.post(
-    "/investigations/{investigation_id}/replay",
-    status_code=status.HTTP_501_NOT_IMPLEMENTED,
-    include_in_schema=False,
+    "/investigations/backtest",
+    status_code=status.HTTP_201_CREATED,
+    response_model=InvestigationSummary,
+    summary="Run a (historical) Alertmanager payload through the pipeline now.",
 )
-async def replay_investigation(
-    investigation_id: str, tenant: TenantContext = Depends(current_tenant)
-) -> dict[str, Any]:
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail={"code": "internal", "message": "Replay ships in spec 0016."},
-    )
+async def backtest(
+    body: BacktestRequest,
+    service: BacktestService = Depends(get_backtest_service),
+) -> InvestigationSummary:
+    """Create + enqueue a backtest investigation. With ``dry_run`` the
+    orchestrator skips delivery so it never posts to Slack."""
+    try:
+        payload = AlertmanagerPayload.model_validate(body.alert_payload)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "code": "alert.invalid_payload",
+                "message": "alert_payload is not a valid Alertmanager payload.",
+                "errors": exc.errors(include_url=False),
+            },
+        ) from exc
+
+    try:
+        inv = await service.backtest(
+            payload=payload, service_id=body.service_id, dry_run=body.dry_run
+        )
+    except ServiceNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+    except AlertValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+    return InvestigationSummary.model_validate(inv, from_attributes=True)
 
 
 @router.post(
-    "/investigations/backtest",
-    status_code=status.HTTP_501_NOT_IMPLEMENTED,
-    include_in_schema=False,
+    "/investigations/{investigation_id}/replay",
+    status_code=status.HTTP_201_CREATED,
+    response_model=InvestigationSummary,
+    summary="Duplicate an existing investigation as a new run.",
 )
-async def backtest(tenant: TenantContext = Depends(current_tenant)) -> dict[str, Any]:
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail={"code": "internal", "message": "Backtest ships in spec 0016."},
-    )
+async def replay_investigation(
+    investigation_id: UUID,
+    service: BacktestService = Depends(get_backtest_service),
+) -> InvestigationSummary:
+    """Re-run an existing investigation (any prior status, including failed)."""
+    inv = await service.replay(investigation_id=investigation_id)
+    if inv is None:
+        raise _NOT_FOUND
+    return InvestigationSummary.model_validate(inv, from_attributes=True)

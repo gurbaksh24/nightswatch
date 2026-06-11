@@ -26,6 +26,7 @@ from ai_sre.core.feedback.repository import FeedbackRepository
 from ai_sre.core.feedback.service import FeedbackService
 from ai_sre.core.integration.repository import IntegrationRepository
 from ai_sre.core.integration.service import IntegrationService
+from ai_sre.core.investigation.backtest import BacktestService
 from ai_sre.core.investigation.repository import (
     InvestigationRepository,
     ReportRepository,
@@ -63,6 +64,7 @@ __all__ = [
     "current_tenant",
     "get_alert_service",
     "get_api_key_service",
+    "get_backtest_service",
     "get_catalog_service",
     "get_connector_registry",
     "get_embedder",
@@ -342,4 +344,18 @@ def get_knowledge_service(
     """Tenant-scoped KnowledgeService with the process-wide embedder."""
     return KnowledgeService(
         KnowledgeRepository(session, tenant.tenant_id), get_embedder()
+    )
+
+
+def get_backtest_service(
+    tenant: TenantContext = Depends(current_tenant),
+    session: AsyncSession = Depends(get_session),
+    job_queue: JobQueue = Depends(get_job_queue),
+) -> BacktestService:
+    """Tenant-scoped BacktestService for the backtest + replay endpoints."""
+    return BacktestService(
+        AlertRepository(session, tenant.tenant_id),
+        InvestigationRepository(session, tenant.tenant_id),
+        ServiceRepository(session, tenant.tenant_id),
+        job_queue,
     )
