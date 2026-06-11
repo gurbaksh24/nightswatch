@@ -20,6 +20,13 @@ if TYPE_CHECKING:
 
 _POST_MESSAGE_URL = "https://slack.com/api/chat.postMessage"
 
+# Slack button action_id -> feedback kind.
+_ACTION_TO_KIND = {
+    "feedback_useful": "useful",
+    "feedback_not_useful": "not_useful",
+    "feedback_actual_cause": "actual_cause",
+}
+
 
 class SlackDelivery(DeliveryChannel):
     name = "slack"
@@ -60,5 +67,29 @@ class SlackDelivery(DeliveryChannel):
         )
 
     async def handle_callback(self, payload: dict[str, Any]) -> CallbackResult:
-        """Interactive callbacks land in spec 0013; inert for now."""
-        return CallbackResult(kind="ignore", payload={})
+        """Parse a Slack ``block_actions`` payload into a CallbackResult.
+
+        Recognises the three feedback buttons; anything else (other
+        interaction types, unknown action_ids, empty actions) is ignored.
+        The button ``value`` carries the investigation_id. Pure parsing — no
+        DB or network access; the route persists the result.
+        """
+        if payload.get("type") != "block_actions":
+            return CallbackResult(kind="ignore", payload={})
+        actions = payload.get("actions") or []
+        if not actions:
+            return CallbackResult(kind="ignore", payload={})
+        action = actions[0]
+        kind = _ACTION_TO_KIND.get(str(action.get("action_id", "")))
+        if kind is None:
+            return CallbackResult(kind="ignore", payload={})
+        user = payload.get("user") or {}
+        actor = user.get("username") or user.get("id")
+        return CallbackResult(
+            kind="feedback",
+            payload={
+                "investigation_id": action.get("value"),
+                "feedback_kind": kind,
+                "actor": actor,
+            },
+        )

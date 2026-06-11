@@ -105,6 +105,7 @@ def _fallback_report(ctx: InvestigationContext, schema_version: str) -> Report:
         hypotheses=hyps,
         prompt_version=PROMPT_VERSION,
         code_version="dev",
+        investigation_id=str(ctx.investigation_id),
     )
 
 
@@ -153,6 +154,7 @@ class ReportStage:
             related_incidents=out.related_incidents,
             prompt_version=PROMPT_VERSION,
             code_version="dev",
+            investigation_id=str(ctx.investigation_id),
         )
         return StageResult(
             name=self.name, status="succeeded", output={"confidence": out.confidence}

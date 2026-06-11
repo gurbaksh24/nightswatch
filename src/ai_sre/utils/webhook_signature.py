@@ -13,7 +13,10 @@ See docs/05-api-spec.md "Webhook payload — signature scheme" and spec 0006.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import secrets
+import time
 
 from ai_sre.utils.crypto import verify_hmac_signature
 
@@ -31,11 +34,41 @@ def sign(secret: str, body: bytes) -> str:
     Used by tests and for documenting how Alertmanager should sign; the
     server only ever *verifies*.
     """
-    import hashlib
-    import hmac
-
     digest = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
     return f"{_SCHEME}{digest}"
+
+
+def slack_signature(signing_secret: str, timestamp: str, body: bytes) -> str:
+    """Compute Slack's ``v0=<hex>`` request signature (used by tests)."""
+    basestring = b"v0:" + timestamp.encode("utf-8") + b":" + body
+    digest = hmac.new(
+        signing_secret.encode("utf-8"), basestring, hashlib.sha256
+    ).hexdigest()
+    return f"v0={digest}"
+
+
+def verify_slack_request(
+    signing_secret: str,
+    timestamp: str | None,
+    body: bytes,
+    signature: str | None,
+    *,
+    max_age_seconds: int = 300,
+) -> bool:
+    """Verify a Slack interactive request (``X-Slack-Signature`` /
+    ``X-Slack-Request-Timestamp``). Rejects stale (>5 min) or mismatched
+    requests. Constant-time compare.
+    """
+    if not timestamp or not signature:
+        return False
+    try:
+        ts = int(timestamp)
+    except ValueError:
+        return False
+    if abs(time.time() - ts) > max_age_seconds:
+        return False
+    expected = slack_signature(signing_secret, timestamp, body)
+    return hmac.compare_digest(expected, signature)
 
 
 def verify_signature(secret: str, body: bytes, signature_header: str | None) -> bool:

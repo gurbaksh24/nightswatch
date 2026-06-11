@@ -87,17 +87,23 @@ def build_blocks(report: Report) -> list[dict[str, Any]]:
             }
         )
 
-    # Inert in MVP; callbacks land in spec 0013.
+    # Each button carries the investigation_id as its `value` so the callback
+    # receiver (api/delivery.py) can attribute the feedback without server-side
+    # state. `value` must be 1..2000 chars; fall back to "unknown" when unset.
+    inv_value = report.investigation_id or "unknown"
     blocks.append(
         {
             "type": "actions",
             "block_id": "ai_sre_feedback",
             "elements": [
                 {"type": "button", "action_id": "feedback_useful",
+                 "value": inv_value,
                  "text": {"type": "plain_text", "text": "👍 Useful"}},
                 {"type": "button", "action_id": "feedback_not_useful",
+                 "value": inv_value,
                  "text": {"type": "plain_text", "text": "👎 Not useful"}},
                 {"type": "button", "action_id": "feedback_actual_cause",
+                 "value": inv_value,
                  "text": {"type": "plain_text", "text": "🎯 Actual cause"}},
             ],
         }

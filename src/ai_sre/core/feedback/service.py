@@ -1,38 +1,57 @@
 """FeedbackService.
 
-Persists feedback events (from Slack buttons and direct API calls), serves
-them to the dashboard, and exports them for eval/training.
+Persists feedback events (from Slack buttons and direct API calls) and serves
+them to the dashboard. Feedback ``kind``: useful | not_useful | actual_cause |
+comment.
 
-Feedback `kind`: useful | not_useful | actual_cause | comment.
-
-On `actual_cause` feedback, the linked investigation's "ground truth" is
-recorded; this is what trains future quality metrics.
+Tenant-scoped via the repository (no tenant argument is threaded through).
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from collections.abc import Sequence
+from typing import Any
 from uuid import UUID
 
-if TYPE_CHECKING:
-    from ai_sre.api.deps import TenantContext
+from ai_sre.core.feedback.repository import FeedbackRepository
+from ai_sre.models.feedback import Feedback
+from ai_sre.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 class FeedbackService:
+    """Record and read feedback for the tenant's investigations."""
+
+    def __init__(self, repo: FeedbackRepository) -> None:
+        self.repo = repo
+
     async def record(
         self,
-        tenant: TenantContext,
         *,
         investigation_id: UUID,
         kind: str,
         actor: str | None = None,
         body: str | None = None,
-        metadata: dict | None = None,
-    ) -> UUID:
-        # TODO(spec-NNNN: feedback)
-        raise NotImplementedError
+        metadata: dict[str, Any] | None = None,
+    ) -> Feedback:
+        """Persist one feedback event and return the row."""
+        row = await self.repo.create(
+            investigation_id=investigation_id,
+            kind=kind,
+            actor=actor,
+            body=body,
+            metadata=metadata,
+        )
+        logger.info(
+            "feedback.recorded",
+            tenant_id=str(self.repo.tenant_id),
+            investigation_id=str(investigation_id),
+            kind=kind,
+        )
+        return row
 
     async def list_for_investigation(
-        self, tenant: TenantContext, investigation_id: UUID
-    ) -> list[object]:
-        raise NotImplementedError
+        self, investigation_id: UUID
+    ) -> Sequence[Feedback]:
+        return await self.repo.list_for_investigation(investigation_id)
