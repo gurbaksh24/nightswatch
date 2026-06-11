@@ -31,6 +31,13 @@ from ai_sre.core.investigation.stages.hypothesis import HypothesisStage
 from ai_sre.core.investigation.stages.report import ReportStage
 from ai_sre.core.investigation.stages.triage import TriageStage
 from ai_sre.core.investigation.stages.validation import ValidationStage
+from ai_sre.core.knowledge.embedding import (
+    EmbeddingProvider,
+    HashingEmbedder,
+    build_embedder,
+)
+from ai_sre.core.knowledge.repository import KnowledgeRepository
+from ai_sre.core.knowledge.service import KnowledgeService
 from ai_sre.core.service.catalog_service import CatalogService
 from ai_sre.core.service.repository import (
     MetricCatalogRepository,
@@ -107,6 +114,32 @@ def _build_investigation_pipeline(
             ReportStage(),
         )
     )
+
+
+_embedder: EmbeddingProvider | None = None
+
+
+def _get_embedder() -> EmbeddingProvider:
+    """Process-wide embedder (model load is expensive — build once).
+
+    Mirrors ``api/deps.get_embedder``: honours AI_SRE_EMBEDDING_PROVIDER and
+    falls back to hashing when sentence-transformers isn't installed.
+    """
+    global _embedder
+    if _embedder is None:
+        provider = get_settings().embedding_provider
+        if provider == "bge":
+            try:
+                import sentence_transformers  # noqa: F401
+            except ImportError:
+                logger.warning(
+                    "worker.embedding.bge_unavailable",
+                    detail="sentence-transformers not installed; using hashing embedder",
+                )
+                _embedder = HashingEmbedder()
+                return _embedder
+        _embedder = build_embedder(provider)
+    return _embedder
 
 
 _slack_delivery: SlackDelivery | None = None
@@ -195,6 +228,9 @@ async def run_investigation(investigation_id: str) -> None:
             connector_registry=connector_registry,
             delivery_dispatcher=delivery_dispatcher,
             delivery_configs=delivery_configs,
+            knowledge=KnowledgeService(
+                KnowledgeRepository(session, inv.tenant_id), _get_embedder()
+            ),
         )
         await orchestrator.run(inv_uuid)
         await session.commit()
