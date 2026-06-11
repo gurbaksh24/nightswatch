@@ -65,16 +65,26 @@ class InvestigationRepository(TenantScopedRepository[Investigation]):
         self,
         *,
         service_id: UUID,
-        triggering_alert_id: UUID,
+        triggering_alert_id: UUID | None,
         fingerprint: str,
+        is_backtest: bool = False,
+        dry_run: bool = False,
+        replayed_from: UUID | None = None,
     ) -> Investigation:
-        """Create a new investigation in ``pending`` state."""
+        """Create a new investigation in ``pending`` state.
+
+        ``is_backtest`` / ``dry_run`` / ``replayed_from`` support the backtest
+        and replay flows (spec 0016); they default to a normal live run.
+        """
         row = Investigation(
             tenant_id=self.tenant_id,
             service_id=service_id,
             triggering_alert_id=triggering_alert_id,
             fingerprint=fingerprint,
             status="pending",
+            is_backtest=is_backtest,
+            dry_run=dry_run,
+            replayed_from=replayed_from,
         )
         self.session.add(row)
         await self.session.flush()

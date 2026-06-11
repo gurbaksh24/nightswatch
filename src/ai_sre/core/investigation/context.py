@@ -166,6 +166,11 @@ class InvestigationContext:
     # search_past_incidents tools. None when the knowledge base isn't wired.
     knowledge: KnowledgeService | None = None
 
+    # Backtest / replay flags (spec 0016), copied off the investigation row.
+    # `dry_run` suppresses delivery so a backtest never posts to Slack.
+    is_backtest: bool = False
+    dry_run: bool = False
+
     def has_completed(self, stage_name: str) -> bool:
         return stage_name in self.completed_stages
 

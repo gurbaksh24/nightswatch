@@ -77,6 +77,12 @@ class ServiceAlreadyExists(AISREError):
     code = "service.already_exists"
 
 
+class ServiceNotFound(AISREError):
+    """Referenced service does not exist for this tenant."""
+
+    code = "service.not_found"
+
+
 # ---- Investigation ----
 class InvestigationError(AISREError):
     code = "investigation.error"
