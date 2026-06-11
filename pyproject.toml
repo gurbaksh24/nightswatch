@@ -25,6 +25,11 @@ dependencies = [
     # http clients
     "httpx>=0.27",
 
+    # knowledge ingestion
+    "python-multipart>=0.0.9",        # multipart upload parsing for FastAPI
+    "pypdf>=4.0",                     # text extraction from PDF uploads
+    "numpy>=1.26",                    # vector math for the hashing embedder
+
     # llm
     "anthropic>=0.34",
 
@@ -42,6 +47,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+embeddings = [
+    # Production embedder (BAAI/bge-small-en-v1.5). Heavy (pulls in torch);
+    # opt-in. Set AI_SRE_EMBEDDING_PROVIDER=bge once installed.
+    "sentence-transformers>=2.7",
+]
 dev = [
     "ruff>=0.5",
     "mypy>=1.10",
@@ -108,6 +118,12 @@ strict = true
 plugins = ["pydantic.mypy"]
 files = ["src", "tests"]
 exclude = ["migrations/"]
+
+# Optional embedding dependency — only present when the 'embeddings' extra is
+# installed. The import is deferred at runtime; tell mypy not to require stubs.
+[[tool.mypy.overrides]]
+module = "sentence_transformers.*"
+ignore_missing_imports = true
 
 # -------------------- pytest --------------------
 [tool.pytest.ini_options]

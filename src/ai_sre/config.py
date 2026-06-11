@@ -71,6 +71,21 @@ class AppSettings(BaseSettings):
         default=0.50, description="Hard cap on USD spend per investigation."
     )
 
+    # ---- Knowledge base / embeddings ----
+    embedding_provider: Literal["hashing", "bge"] = Field(
+        default="hashing",
+        description=(
+            "Embedding backend. 'hashing' is deterministic and dependency-free "
+            "(default). 'bge' uses BAAI/bge-small-en-v1.5 via sentence-transformers "
+            "— install the 'embeddings' extra first; the app falls back to hashing "
+            "if it isn't importable."
+        ),
+    )
+    knowledge_max_upload_bytes: int = Field(
+        default=10 * 1024 * 1024,
+        description="Max accepted size for an uploaded knowledge document (bytes).",
+    )
+
     # ---- Investigation budgets ----
     inv_budget_wall_seconds: int = Field(
         default=300, description="Wall-clock budget per investigation."
