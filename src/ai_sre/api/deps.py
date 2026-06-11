@@ -30,6 +30,13 @@ from ai_sre.core.investigation.repository import (
     InvestigationRepository,
     ReportRepository,
 )
+from ai_sre.core.knowledge.embedding import (
+    EmbeddingProvider,
+    HashingEmbedder,
+    build_embedder,
+)
+from ai_sre.core.knowledge.repository import KnowledgeRepository
+from ai_sre.core.knowledge.service import KnowledgeService
 from ai_sre.core.service.catalog_service import CatalogService
 from ai_sre.core.service.repository import (
     MetricCatalogRepository,
@@ -46,6 +53,9 @@ from ai_sre.db import get_sessionmaker
 from ai_sre.queue.base import JobQueue
 from ai_sre.queue.procrastinate_queue import ProcrastinateJobQueue
 from ai_sre.utils.crypto import EnvelopeEncryptionService
+from ai_sre.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 __all__ = [
     "TenantContext",
@@ -55,11 +65,13 @@ __all__ = [
     "get_api_key_service",
     "get_catalog_service",
     "get_connector_registry",
+    "get_embedder",
     "get_feedback_service",
     "get_integration_service",
     "get_integration_service_for_tenant",
     "get_investigation_repo",
     "get_job_queue",
+    "get_knowledge_service",
     "get_report_repo",
     "get_service_service",
     "get_session",
@@ -299,3 +311,35 @@ def get_feedback_service(
 ) -> FeedbackService:
     """Tenant-scoped FeedbackService."""
     return FeedbackService(FeedbackRepository(session, tenant.tenant_id))
+
+
+@lru_cache(maxsize=1)
+def get_embedder() -> EmbeddingProvider:
+    """Process-wide embedder (model load is expensive — build once).
+
+    Honours ``AI_SRE_EMBEDDING_PROVIDER``. If ``bge`` is requested but
+    ``sentence-transformers`` isn't installed, we fall back to the hashing
+    embedder with a warning rather than failing every request.
+    """
+    settings = get_settings()
+    provider = settings.embedding_provider
+    if provider == "bge":
+        try:
+            import sentence_transformers  # noqa: F401
+        except ImportError:
+            logger.warning(
+                "embedding.bge_unavailable",
+                detail="sentence-transformers not installed; using hashing embedder",
+            )
+            return HashingEmbedder()
+    return build_embedder(provider)
+
+
+def get_knowledge_service(
+    tenant: TenantContext = Depends(current_tenant),
+    session: AsyncSession = Depends(get_session),
+) -> KnowledgeService:
+    """Tenant-scoped KnowledgeService with the process-wide embedder."""
+    return KnowledgeService(
+        KnowledgeRepository(session, tenant.tenant_id), get_embedder()
+    )

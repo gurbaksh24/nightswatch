@@ -21,11 +21,14 @@ from ai_sre.api import (
     feedback,
     integrations,
     investigations,
+    knowledge,
     services,
     tenants,
 )
 from ai_sre.config import get_settings
-from ai_sre.utils.logging import configure_logging
+from ai_sre.utils.logging import configure_logging, get_logger
+
+logger = get_logger(__name__)
 
 
 @asynccontextmanager
@@ -42,6 +45,15 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     configure_logging(settings)
     # TODO: init DB pool, registries, OTel.
+    # Pre-warm the embedding model so the first knowledge upload/search doesn't
+    # pay the (potentially multi-second) model-load cost. Best-effort.
+    from ai_sre.api.deps import get_embedder
+
+    try:
+        await get_embedder().warm_up()
+    except Exception as exc:  # pragma: no cover - never block startup on this
+        logger.warning("embedding.warmup_failed", error=str(exc))
+
     from ai_sre.workers.app import procrastinate_app
     async with procrastinate_app.open_async():
         yield
@@ -65,6 +77,7 @@ def create_app() -> FastAPI:
     app.include_router(investigations.router, prefix="/v1", tags=["investigations"])
     app.include_router(feedback.router, prefix="/v1", tags=["feedback"])
     app.include_router(delivery.router, prefix="/v1", tags=["delivery"])
+    app.include_router(knowledge.router, prefix="/v1", tags=["knowledge"])
 
     @app.get("/healthz", include_in_schema=False)
     async def healthz() -> dict[str, str]:
