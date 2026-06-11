@@ -43,6 +43,20 @@ def test_header_and_actions_always_present() -> None:
 
 
 @pytest.mark.unit
+def test_buttons_carry_investigation_id_as_value() -> None:
+    report = Report(headline="x", investigation_id="abc-123")
+    actions = next(b for b in build_blocks(report) if b["type"] == "actions")
+    assert {e["value"] for e in actions["elements"]} == {"abc-123"}
+
+
+@pytest.mark.unit
+def test_buttons_value_falls_back_when_no_investigation_id() -> None:
+    actions = next(b for b in build_blocks(Report(headline="x")) if b["type"] == "actions")
+    # `value` must be a non-empty string for Slack; we fall back to a sentinel.
+    assert all(e["value"] for e in actions["elements"])
+
+
+@pytest.mark.unit
 def test_zero_hypotheses_renders_placeholder() -> None:
     blocks = build_blocks(_report([]))
     assert _hyp_sections(blocks) == []

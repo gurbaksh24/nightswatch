@@ -22,6 +22,8 @@ from ai_sre.config import get_settings
 from ai_sre.connectors.registry import ConnectorRegistry
 from ai_sre.core.alert.repository import AlertRepository
 from ai_sre.core.alert.service import AlertService
+from ai_sre.core.feedback.repository import FeedbackRepository
+from ai_sre.core.feedback.service import FeedbackService
 from ai_sre.core.integration.repository import IntegrationRepository
 from ai_sre.core.integration.service import IntegrationService
 from ai_sre.core.investigation.repository import (
@@ -53,6 +55,7 @@ __all__ = [
     "get_api_key_service",
     "get_catalog_service",
     "get_connector_registry",
+    "get_feedback_service",
     "get_integration_service",
     "get_integration_service_for_tenant",
     "get_investigation_repo",
@@ -288,3 +291,11 @@ def get_report_repo(
 ) -> ReportRepository:
     """Tenant-scoped ReportRepository for the read endpoints."""
     return ReportRepository(session, tenant.tenant_id)
+
+
+def get_feedback_service(
+    tenant: TenantContext = Depends(current_tenant),
+    session: AsyncSession = Depends(get_session),
+) -> FeedbackService:
+    """Tenant-scoped FeedbackService."""
+    return FeedbackService(FeedbackRepository(session, tenant.tenant_id))

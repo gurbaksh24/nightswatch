@@ -17,6 +17,7 @@ from fastapi import FastAPI
 
 from ai_sre.api import (
     alerts,
+    delivery,
     feedback,
     integrations,
     investigations,
@@ -63,6 +64,7 @@ def create_app() -> FastAPI:
     app.include_router(alerts.router, prefix="/v1", tags=["alerts"])
     app.include_router(investigations.router, prefix="/v1", tags=["investigations"])
     app.include_router(feedback.router, prefix="/v1", tags=["feedback"])
+    app.include_router(delivery.router, prefix="/v1", tags=["delivery"])
 
     @app.get("/healthz", include_in_schema=False)
     async def healthz() -> dict[str, str]:

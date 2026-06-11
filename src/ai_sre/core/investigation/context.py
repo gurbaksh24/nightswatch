@@ -100,6 +100,9 @@ class Report:
     related_incidents: list[dict[str, Any]] = field(default_factory=list)
     prompt_version: str = ""
     code_version: str = ""
+    # The investigation this report belongs to — carried into the Slack
+    # message so feedback buttons can echo it back in their `value`.
+    investigation_id: str = ""
 
 
 @dataclass
