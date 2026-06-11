@@ -97,22 +97,29 @@ class KnowledgeRepository(TenantScopedRepository[KnowledgeDoc]):
         await self.session.flush()
 
     async def search_chunks(
-        self, embedding: list[float], k: int
-    ) -> list[tuple[KnowledgeChunk, float]]:
+        self,
+        embedding: list[float],
+        k: int,
+        *,
+        kinds: Sequence[str] | None = None,
+    ) -> list[tuple[KnowledgeChunk, str, float]]:
         """k nearest chunks by cosine distance, scoped + excluding deleted docs.
 
-        Returns ``(chunk, distance)`` pairs ordered closest-first. Returns fewer
-        than ``k`` (or none) rather than erroring when the tenant has few chunks.
+        ``kinds`` restricts to docs of those kinds (e.g. ``["runbook"]``).
+        Returns ``(chunk, doc_title, distance)`` triples ordered closest-first.
+        Returns fewer than ``k`` (or none) rather than erroring when the tenant
+        has few chunks.
         """
         distance = KnowledgeChunk.embedding.cosine_distance(embedding).label("distance")
         stmt = (
-            select(KnowledgeChunk, distance)
+            select(KnowledgeChunk, KnowledgeDoc.title, distance)
             .join(KnowledgeDoc, KnowledgeChunk.doc_id == KnowledgeDoc.id)
             .where(KnowledgeChunk.tenant_id == self.tenant_id)
             .where(KnowledgeDoc.deleted_at.is_(None))
             .where(KnowledgeChunk.embedding.isnot(None))
-            .order_by(distance)
-            .limit(k)
         )
+        if kinds:
+            stmt = stmt.where(KnowledgeDoc.kind.in_(list(kinds)))
+        stmt = stmt.order_by(distance).limit(k)
         result = await self.session.execute(stmt)
-        return [(row[0], float(row[1])) for row in result.all()]
+        return [(row[0], str(row[1]), float(row[2])) for row in result.all()]

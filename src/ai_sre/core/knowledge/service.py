@@ -19,6 +19,7 @@ See LLD §13.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -45,6 +46,7 @@ class KnowledgeDocInput:
 class KnowledgeSearchResult:
     doc_id: UUID
     chunk_id: UUID
+    title: str
     text: str
     headings: list[str]
     score: float  # cosine similarity in [0, 1]; higher is closer
@@ -96,22 +98,33 @@ class KnowledgeService:
         )
         return row
 
-    async def search(self, query: str, k: int = 5) -> list[KnowledgeSearchResult]:
-        """Tenant-scoped vector search. Returns ≤ k results (never errors on few)."""
+    async def search(
+        self,
+        query: str,
+        k: int = 5,
+        *,
+        kinds: Sequence[str] | None = None,
+    ) -> list[KnowledgeSearchResult]:
+        """Tenant-scoped vector search. Returns ≤ k results (never errors on few).
+
+        ``kinds`` restricts to docs of those kinds — the LLM tools use it to
+        split runbooks from past incidents.
+        """
         query = query.strip()
         if not query:
             return []
         embedding = await self.embedder.embed_query(query)
-        hits = await self.repo.search_chunks(embedding, k)
+        hits = await self.repo.search_chunks(embedding, k, kinds=kinds)
         return [
             KnowledgeSearchResult(
                 doc_id=chunk.doc_id,
                 chunk_id=chunk.id,
+                title=title,
                 text=chunk.text,
                 headings=list(chunk.headings or []),
                 score=1.0 - distance,
             )
-            for chunk, distance in hits
+            for chunk, title, distance in hits
         ]
 
     async def ingest_past_investigation(

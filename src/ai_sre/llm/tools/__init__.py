@@ -169,6 +169,8 @@ def register_builtin_tools(registry: ToolRegistry = REGISTRY) -> None:
     from ai_sre.llm.tools.get_service_dependencies import GET_SERVICE_DEPENDENCIES
     from ai_sre.llm.tools.list_metric_names import LIST_METRIC_NAMES
     from ai_sre.llm.tools.query_prometheus import QUERY_PROMETHEUS
+    from ai_sre.llm.tools.search_past_incidents import SEARCH_PAST_INCIDENTS
+    from ai_sre.llm.tools.search_runbooks import SEARCH_RUNBOOKS
 
     existing = set(registry.names())
     for spec in (
@@ -176,6 +178,8 @@ def register_builtin_tools(registry: ToolRegistry = REGISTRY) -> None:
         LIST_METRIC_NAMES,
         GET_SERVICE_DEPENDENCIES,
         GET_ALERT_DETAILS,
+        SEARCH_RUNBOOKS,
+        SEARCH_PAST_INCIDENTS,
     ):
         if spec.name not in existing:
             registry.register(spec)

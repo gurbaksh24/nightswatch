@@ -51,6 +51,7 @@ if TYPE_CHECKING:
     from ai_sre.connectors.registry import ConnectorRegistry
     from ai_sre.core.investigation.pipeline import Pipeline, Stage
     from ai_sre.core.investigation.repository import InvestigationRepository
+    from ai_sre.core.knowledge.service import KnowledgeService
     from ai_sre.delivery.dispatcher import DeliveryDispatcher
     from ai_sre.llm.gateway import LLMGateway
 
@@ -88,6 +89,37 @@ def _service_to_dict(service: Service | None) -> dict[str, Any]:
     }
 
 
+def _render_past_incident(ctx: InvestigationContext) -> str:
+    """Markdown body for the past-incident knowledge doc.
+
+    Leads with the alert/service identifiers so a future similar alert's
+    query has strong term overlap with this doc.
+    """
+    report = ctx.report
+    assert report is not None  # caller checks
+    lines = [
+        f"# {report.headline}",
+        "",
+        f"Alert: {ctx.alert.get('alert_name', 'unknown')}",
+        f"Service: {ctx.service.get('name', 'unknown')}",
+        f"Severity: {ctx.alert.get('severity', 'unknown')}",
+        f"Confidence: {report.confidence}",
+        "",
+        "## Hypotheses",
+    ]
+    for h in report.hypotheses or []:
+        statement = h.get("statement", "") if isinstance(h, dict) else str(h)
+        confirmed = h.get("confirmed") if isinstance(h, dict) else None
+        lines.append(f"- confirmed={confirmed}: {statement}")
+    if report.next_actions:
+        lines.append("")
+        lines.append("## Next actions")
+        for a in report.next_actions:
+            action = a.get("action", "") if isinstance(a, dict) else str(a)
+            lines.append(f"- {action}")
+    return "\n".join(lines)
+
+
 class InvestigationOrchestrator:
     """Runs one investigation through the pipeline. Idempotent / resumable."""
 
@@ -99,6 +131,7 @@ class InvestigationOrchestrator:
         connector_registry: ConnectorRegistry | None = None,
         delivery_dispatcher: DeliveryDispatcher | None = None,
         delivery_configs: dict[str, dict[str, Any]] | None = None,
+        knowledge: KnowledgeService | None = None,
     ) -> None:
         self.pipeline = pipeline
         self.repo = repo
@@ -111,6 +144,10 @@ class InvestigationOrchestrator:
         # integrations). Both None when no channel is connected.
         self.delivery_dispatcher = delivery_dispatcher
         self.delivery_configs = delivery_configs
+        # Knowledge base: powers the search_runbooks / search_past_incidents
+        # tools and the post-run RCA ingest (FR-7.3). None → tools degrade to
+        # empty results and no ingest happens.
+        self.knowledge = knowledge
 
     async def run(self, investigation_id: UUID) -> None:
         """Run the full pipeline for a single investigation. Safe to retry."""
@@ -139,6 +176,9 @@ class InvestigationOrchestrator:
         else:
             await self._finalize(inv, ctx)
 
+        # Both finalize paths land on succeeded/partial — embed the RCA as a
+        # searchable past incident (FR-7.3) before delivery.
+        await self._ingest_past_investigation(ctx)
         await self._dispatch_delivery(ctx)
         log.info("orchestrator.done", status=inv.status)
 
@@ -220,6 +260,7 @@ class InvestigationOrchestrator:
         ctx.gateway = self.gateway
         ctx.connector_registry = self.connector_registry
         ctx.dispatcher = ToolDispatcher(REGISTRY, ToolCallRepository(session, tenant_id))
+        ctx.knowledge = self.knowledge
 
         # Restore completed stages for idempotent resume.
         for name in await self.repo.get_completed_stage_names(inv.id):
@@ -343,6 +384,27 @@ class InvestigationOrchestrator:
             completed_at=now,
             budget_snapshot=ctx.budget.snapshot(),
         )
+
+    async def _ingest_past_investigation(self, ctx: InvestigationContext) -> None:
+        """Embed the completed RCA as a ``past_investigation`` doc (FR-7.3).
+
+        Best-effort: an embedding/DB failure here must never roll back the
+        finalized investigation — log it (greppable for re-ingest) and move on.
+        """
+        log = logger.bind(investigation_id=str(ctx.investigation_id))
+        if self.knowledge is None or ctx.report is None:
+            log.info("orchestrator.past_incident_ingest_skipped")
+            return
+        try:
+            await self.knowledge.ingest_past_investigation(
+                investigation_id=ctx.investigation_id,
+                headline=ctx.report.headline,
+                body=_render_past_incident(ctx),
+            )
+            log.info("orchestrator.past_incident_ingested")
+        except Exception as exc:
+            # Flagged for re-ingest: grep "past_incident_ingest_failed".
+            log.warning("orchestrator.past_incident_ingest_failed", error=str(exc))
 
     async def _dispatch_delivery(self, ctx: InvestigationContext) -> None:
         """Post the report to the tenant's configured channels (spec 0010).
