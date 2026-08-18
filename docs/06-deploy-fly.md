@@ -95,10 +95,47 @@ fly status
 BASE="https://nightswatch.fly.dev"
 ADMIN_TOKEN="<the AI_SRE_ADMIN_TOKEN you set>"
 
-# tenant + API key
+# create the tenant — note the "id" in the response
 curl -s -X POST "$BASE/v1/tenant" -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" -d '{"name": "Acme", "slug": "acme"}'
-curl -s -X POST "$BASE/v1/auth/api-keys" -H "Authorization: Bearer <tenant flow>" ...
+```
+
+**Issuing the tenant's first API key** currently requires a one-off on the
+API machine: `POST /v1/auth/api-keys` needs bearer auth with an *existing*
+key, and tenant creation doesn't return one (chicken-and-egg; spec 0018
+closes this with an admin bootstrap path). Until then:
+
+```bash
+fly ssh console --app nightswatch
+```
+
+then inside that shell (fill in the tenant id):
+
+```bash
+python - <<'EOF'
+import asyncio
+from uuid import UUID
+from ai_sre.core.tenant.api_key_service import ApiKeyService
+from ai_sre.core.tenant.repository import ApiKeyRepository, TenantRepository
+from ai_sre.db import session_scope
+
+TENANT_ID = UUID("PASTE-TENANT-ID-HERE")
+
+async def main() -> None:
+    async with session_scope() as session:
+        service = ApiKeyService(ApiKeyRepository(session), TenantRepository(session))
+        issued = await service.issue(TENANT_ID, name="bootstrap")
+        print("API KEY (shown once, save it):", issued.key)
+
+asyncio.run(main())
+EOF
+```
+
+Every later key is self-service over the API:
+
+```bash
+curl -s -X POST "$BASE/v1/auth/api-keys" -H "Authorization: Bearer <bootstrap key>" \
+  -H "Content-Type: application/json" -d '{"name": "cli"}'
 ```
 
 Then follow the normal onboarding order (docs/05-api-spec.md): create the
