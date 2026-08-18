@@ -20,25 +20,48 @@ another and change `app = ...` in both fly.toml files.
 
 ## 1. Postgres
 
+Generate the DB password into a variable and **save it in your password
+manager before setting it** — Fly can never show a secret back, and you need
+this value again in `AI_SRE_DB_URL`:
+
+```bash
+# hex, not base64: this value is embedded in AI_SRE_DB_URL, and base64's
+# `/` and `+` break psycopg's URL parsing (asyncpg tolerates them, psycopg
+# doesn't — Procrastinate uses psycopg).
+DB_PASSWORD="$(openssl rand -hex 24)"
+printf 'POSTGRES_PASSWORD: %s\n' "$DB_PASSWORD"   # save this now
+```
+
 ```bash
 fly apps create nightswatch-db
 fly volumes create pgdata --app nightswatch-db --region iad --size 3 --yes
-fly secrets set --app nightswatch-db POSTGRES_PASSWORD="$(openssl rand -base64 24)"
+fly secrets set --app nightswatch-db POSTGRES_PASSWORD="$DB_PASSWORD"
 fly deploy --config ops/fly/db/fly.toml
 ```
 
-Note the password (`fly secrets` won't show it again — save it in your
-password manager; you need it in `AI_SRE_DB_URL` next).
+If you ever lose the password *after* the first deploy, changing the secret
+is not enough (Postgres bakes it in at initdb) — with no data yet, destroy
+the machine + volume and redeploy with a fresh one.
 
 ## 2. Platform app + secrets
+
+Generate the two app-owned secrets into variables and **save both in your
+password manager first** (the admin token is needed for every tenant-creation
+call later; Fly cannot display secrets after they're set):
+
+```bash
+ADMIN_TOKEN="$(openssl rand -base64 24)"
+ENCRYPTION_KEY="$(python3 -c 'import secrets, base64; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())')"
+printf 'AI_SRE_ADMIN_TOKEN: %s\nAI_SRE_TENANT_ENCRYPTION_KEY: %s\n' "$ADMIN_TOKEN" "$ENCRYPTION_KEY"   # save both now
+```
 
 ```bash
 fly apps create nightswatch
 
 fly secrets set --app nightswatch \
-  AI_SRE_DB_URL="postgresql+asyncpg://aisre:<DB_PASSWORD>@nightswatch-db.internal:5432/aisre" \
-  AI_SRE_ADMIN_TOKEN="$(openssl rand -base64 24)" \
-  AI_SRE_TENANT_ENCRYPTION_KEY="$(python3 -c 'import secrets, base64; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())')" \
+  AI_SRE_DB_URL="postgresql+asyncpg://aisre:$DB_PASSWORD@nightswatch-db.internal:5432/aisre" \
+  AI_SRE_ADMIN_TOKEN="$ADMIN_TOKEN" \
+  AI_SRE_TENANT_ENCRYPTION_KEY="$ENCRYPTION_KEY" \
   AI_SRE_LLM_API_KEY="<anthropic api key>" \
   AI_SRE_LLM_MODEL="<verify a live model id for your account>" \
   AI_SRE_SLACK_CLIENT_ID="<slack app client id>" \
