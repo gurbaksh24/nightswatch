@@ -52,6 +52,8 @@ class AnthropicProvider(LLMProvider):
     def __init__(self, api_key: str, model: str) -> None:
         self._client = anthropic.AsyncAnthropic(api_key=api_key)
         self._model = model
+        # Public: the gateway reads this for metric labels (spec 0017).
+        self.model = model
         self._price_in, self._price_out = _price_for(model)
 
     async def chat(

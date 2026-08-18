@@ -21,8 +21,14 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from uuid import UUID
 
+from opentelemetry import trace
+
+from ai_sre.observability.metrics import TOOL_CALLS_TOTAL
+
 if TYPE_CHECKING:
     from ai_sre.core.investigation.context import InvestigationContext
+
+_tracer = trace.get_tracer("ai_sre.llm.tools")
 
 
 ToolInput = dict[str, Any]
@@ -92,6 +98,12 @@ class ToolDispatcher:
     ``dispatch`` never raises for tool-level failures (unknown tool, bad
     input, handler exception); it records ``outcome="error"`` and returns an
     error envelope so the model can recover.
+
+    The one deliberate exception: the per-investigation tool-call budget
+    (NFR-6.2, spec 0017) is enforced *here* — the single choke point every
+    tool call passes through — and ``BudgetExhausted`` propagates as
+    control flow (the gateway's tool loop catches it and finishes with
+    partial results).
     """
 
     def __init__(self, registry: ToolRegistry, store: ToolCallStore | None = None) -> None:
@@ -99,6 +111,19 @@ class ToolDispatcher:
         self.store = store
 
     async def dispatch(
+        self, name: str, input: dict[str, Any], ctx: InvestigationContext
+    ) -> ToolOutput:
+        ctx.budget.assert_can_call_tool()  # raises BudgetExhausted — see class docstring
+        with _tracer.start_as_current_span(
+            "llm.tool",
+            attributes={
+                "ai_sre.tool": name,
+                "ai_sre.investigation_id": str(ctx.investigation_id),
+            },
+        ):
+            return await self._dispatch_inner(name, input, ctx)
+
+    async def _dispatch_inner(
         self, name: str, input: dict[str, Any], ctx: InvestigationContext
     ) -> ToolOutput:
         started = time.monotonic()
@@ -145,6 +170,8 @@ class ToolDispatcher:
         error: dict[str, Any] | None,
     ) -> ToolOutput:
         latency_ms = int((time.monotonic() - started) * 1000)
+        ctx.budget.record_tool_call()
+        TOOL_CALLS_TOTAL.labels(tool=name, outcome=outcome).inc()
         if self.store is not None:
             await self.store.record(
                 investigation_id=ctx.investigation_id,

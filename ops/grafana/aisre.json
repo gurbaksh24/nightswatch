@@ -1,0 +1,114 @@
+{
+  "__comment": "Starter Grafana dashboard for AI-SRE platform observability (spec 0017). Import via Dashboards > Import. Assumes a Prometheus datasource scraping the API's /metrics.",
+  "title": "AI-SRE Platform",
+  "uid": "aisre-platform",
+  "schemaVersion": 39,
+  "editable": true,
+  "timezone": "browser",
+  "time": { "from": "now-6h", "to": "now" },
+  "refresh": "1m",
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Webhook requests / min",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum(rate(ai_sre_webhook_received_total[5m])) * 60",
+          "legendFormat": "received"
+        },
+        {
+          "expr": "sum(rate(ai_sre_rate_limit_hits_total[5m])) * 60",
+          "legendFormat": "rate-limited"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Investigation stage duration (p95)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, stage) (rate(ai_sre_investigation_duration_seconds_bucket[15m])))",
+          "legendFormat": "{{stage}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Tool calls by outcome",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "expr": "sum by (tool, outcome) (rate(ai_sre_tool_calls_total[15m]))",
+          "legendFormat": "{{tool}} ({{outcome}})"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "LLM spend (USD / hour)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        {
+          "expr": "sum by (model) (rate(ai_sre_llm_cost_usd_total[1h])) * 3600",
+          "legendFormat": "{{model}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "currencyUSD" } }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "LLM tokens / min",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        {
+          "expr": "sum by (model) (rate(ai_sre_llm_tokens_total[15m])) * 60",
+          "legendFormat": "{{model}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Delivery outcomes",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [
+        {
+          "expr": "sum by (channel, outcome) (rate(ai_sre_delivery_total[15m]))",
+          "legendFormat": "{{channel}} ({{outcome}})"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "Queue depth (todo)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "targets": [
+        {
+          "expr": "ai_sre_queue_depth",
+          "legendFormat": "{{queue}}"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Rate-limit hits by tenant",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "targets": [
+        {
+          "expr": "sum by (tenant_id) (increase(ai_sre_rate_limit_hits_total[1h]))",
+          "legendFormat": "{{tenant_id}}"
+        }
+      ]
+    }
+  ]
+}

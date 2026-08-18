@@ -30,6 +30,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from opentelemetry import trace
 from tenacity import (
     AsyncRetrying,
     retry_if_exception_type,
@@ -39,6 +40,9 @@ from tenacity import (
 
 from ai_sre.exceptions import BudgetExhausted, LLMResponseInvalid, LLMTransientError
 from ai_sre.llm.prompts import PROMPT_VERSION as _DEFAULT_PROMPT_VERSION
+from ai_sre.observability.metrics import LLM_COST_USD_TOTAL, LLM_TOKENS_TOTAL
+
+_tracer = trace.get_tracer("ai_sre.llm")
 
 if TYPE_CHECKING:
     from ai_sre.core.investigation.budget import Budget
@@ -114,6 +118,17 @@ class LLMGateway:
         self.provider = provider
         self.prompt_version = prompt_version
         self._max_attempts = max_attempts
+        # Metric labels (NFR-7.2). Providers expose `name`; `model` is a
+        # public attribute on AnthropicProvider (fakes may omit both).
+        self._provider_label = getattr(provider, "name", type(provider).__name__)
+        self._model_label = getattr(provider, "model", "unknown")
+
+    def _record_usage(self, resp: LLMResponse, budget: Budget) -> None:
+        """Record one provider round-trip against the budget and metrics."""
+        budget.record_llm_call(tokens=resp.tokens_used, cost_usd=resp.cost_usd)
+        labels = {"provider": self._provider_label, "model": self._model_label}
+        LLM_TOKENS_TOTAL.labels(**labels).inc(resp.tokens_used)
+        LLM_COST_USD_TOTAL.labels(**labels).inc(resp.cost_usd)
 
     async def chat(
         self,
@@ -128,14 +143,21 @@ class LLMGateway:
         """One-shot call. Enforces + records budget; coerces JSON when a
         ``response_format`` is requested."""
         budget.assert_can_call_llm(expected_tokens=max_tokens)
-        resp = await self._chat_with_retry(
-            system=system,
-            messages=messages,
-            tools=tools,
-            response_format=response_format,
-            max_tokens=max_tokens,
-        )
-        budget.record_llm_call(tokens=resp.tokens_used, cost_usd=resp.cost_usd)
+        with _tracer.start_as_current_span(
+            "llm.chat",
+            attributes={
+                "ai_sre.provider": self._provider_label,
+                "ai_sre.model": self._model_label,
+            },
+        ):
+            resp = await self._chat_with_retry(
+                system=system,
+                messages=messages,
+                tools=tools,
+                response_format=response_format,
+                max_tokens=max_tokens,
+            )
+        self._record_usage(resp, budget)
 
         if response_format is not None:
             resp = await self._coerce_structured(
@@ -185,11 +207,12 @@ class LLMGateway:
                     )
                 )
                 for call in resp.tool_calls:
-                    budget.assert_can_call_tool()
+                    # The dispatcher enforces + records the tool-call budget
+                    # (NFR-6.2, spec 0017); BudgetExhausted lands in the
+                    # except below.
                     result = await dispatcher.dispatch(
                         call.get("name", ""), call.get("input", {}), ctx
                     )
-                    budget.record_tool_call()
                     dispatched.append(
                         {"name": call.get("name", ""), "input": call.get("input", {}), "result": result}
                     )
@@ -269,9 +292,7 @@ class LLMGateway:
             response_format=response_format,
             max_tokens=max_tokens,
         )
-        budget.record_llm_call(
-            tokens=retry_resp.tokens_used, cost_usd=retry_resp.cost_usd
-        )
+        self._record_usage(retry_resp, budget)
         parsed_retry = _try_parse_json(retry_resp.text)
         if parsed_retry is None:
             raise LLMResponseInvalid(
