@@ -92,14 +92,23 @@ class AppSettings(BaseSettings):
         default=10 * 1024 * 1024,
         description="Max accepted size for an uploaded knowledge document (bytes).",
     )
+    runbook_fetch_enabled: bool = Field(
+        default=True,
+        description=(
+            "Auto-fetch runbook_url from alert annotations into the knowledge "
+            "base before the investigation's LLM stages run (spec 0021)."
+        ),
+    )
+    runbook_fetch_timeout_seconds: int = Field(
+        default=10,
+        description="HTTP timeout for the runbook_url auto-fetch.",
+    )
 
     # ---- Investigation budgets ----
     inv_budget_wall_seconds: int = Field(
         default=300, description="Wall-clock budget per investigation."
     )
-    inv_budget_tool_calls: int = Field(
-        default=30, description="Max tool calls per investigation."
-    )
+    inv_budget_tool_calls: int = Field(default=30, description="Max tool calls per investigation.")
     inv_dedupe_window_seconds: int = Field(
         default=900, description="Window for alert deduplication."
     )
@@ -117,9 +126,7 @@ class AppSettings(BaseSettings):
     prom_query_timeout_seconds: int = Field(
         default=10, description="Default query timeout for Prometheus."
     )
-    prom_max_points: int = Field(
-        default=10_000, description="Max data points returned per query."
-    )
+    prom_max_points: int = Field(default=10_000, description="Max data points returned per query.")
     prom_max_series: int = Field(default=10_000, description="Max series per query.")
 
     # ---- Rate limiting ----

@@ -182,6 +182,11 @@ class InvestigationOrchestrator:
         ctx = await self._build_context(inv)
         await self.repo.set_status(inv, status="running", started_at=datetime.now(UTC))
 
+        # Best-effort: fetch the alert's runbook_url into the knowledge base
+        # BEFORE the LLM stages, so search_runbooks can cite the exact
+        # runbook for the monitor that fired (spec 0021).
+        await self._ingest_alert_runbook(ctx)
+
         try:
             for stage in self.pipeline.stages:
                 if ctx.has_completed(stage.name):
@@ -262,9 +267,7 @@ class InvestigationOrchestrator:
         # combined cap on every LLM call.
         tenant_spent = 0.0
         if settings.llm_max_cost_usd_per_tenant_day > 0:
-            tenant_spent = await self.repo.sum_llm_cost_since(
-                datetime.now(UTC) - timedelta(days=1)
-            )
+            tenant_spent = await self.repo.sum_llm_cost_since(datetime.now(UTC) - timedelta(days=1))
         budget = Budget(
             max_wall_seconds=settings.inv_budget_wall_seconds,
             max_tool_calls=settings.inv_budget_tool_calls,
@@ -336,9 +339,7 @@ class InvestigationOrchestrator:
         )
         ctx.current_stage_id = running.id
         try:
-            result = await asyncio.wait_for(
-                stage.execute(ctx), timeout=stage.timeout_seconds
-            )
+            result = await asyncio.wait_for(stage.execute(ctx), timeout=stage.timeout_seconds)
         except TimeoutError:
             log.warning("stage.timeout")
             await self.repo.upsert_stage(
@@ -414,9 +415,7 @@ class InvestigationOrchestrator:
             budget_snapshot=ctx.budget.snapshot(),
         )
 
-    async def _finalize_partial(
-        self, inv: Any, ctx: InvestigationContext, *, reason: str
-    ) -> None:
+    async def _finalize_partial(self, inv: Any, ctx: InvestigationContext, *, reason: str) -> None:
         now = datetime.now(UTC)
         # Stages we never got to (or that were interrupted) are budget_exhausted.
         for stage in self.pipeline.stages:
@@ -438,6 +437,37 @@ class InvestigationOrchestrator:
             completed_at=now,
             budget_snapshot=ctx.budget.snapshot(),
         )
+
+    async def _ingest_alert_runbook(self, ctx: InvestigationContext) -> None:
+        """Fetch + index the alert's ``runbook_url`` annotation (spec 0021).
+
+        Best-effort and time-bounded: any failure (or a hung fetch) costs at
+        most the timeout and a warning — never the investigation. The fetch
+        itself is SSRF-guarded in ``core/knowledge/runbook_fetcher.py``.
+        """
+        if self.knowledge is None:
+            return
+        url = (ctx.alert.get("annotations") or {}).get("runbook_url")
+        if not url or not isinstance(url, str):
+            return
+        settings = get_settings()
+        if not settings.runbook_fetch_enabled:
+            return
+        log = logger.bind(investigation_id=str(ctx.investigation_id))
+        try:
+            outcome = await asyncio.wait_for(
+                self.knowledge.ingest_runbook_from_url(
+                    url,
+                    timeout_seconds=settings.runbook_fetch_timeout_seconds,
+                    max_bytes=settings.knowledge_max_upload_bytes,
+                ),
+                # Headroom over the HTTP timeout for chunk+embed.
+                timeout=settings.runbook_fetch_timeout_seconds + 10,
+            )
+            log.info("orchestrator.runbook_ingest", url=url, outcome=outcome)
+        except Exception as exc:
+            # Greppable for follow-up; the pipeline continues without it.
+            log.warning("orchestrator.runbook_ingest_failed", url=url, error=str(exc))
 
     async def _ingest_past_investigation(self, ctx: InvestigationContext) -> None:
         """Embed the completed RCA as a ``past_investigation`` doc (FR-7.3).
@@ -472,16 +502,10 @@ class InvestigationOrchestrator:
             # Backtest dry run — never post to external channels (spec 0016).
             log.info("orchestrator.delivery_skipped", reason="dry_run")
             return
-        if (
-            self.delivery_dispatcher is None
-            or not self.delivery_configs
-            or ctx.report is None
-        ):
+        if self.delivery_dispatcher is None or not self.delivery_configs or ctx.report is None:
             log.info("orchestrator.delivery_skipped")
             return
-        receipts = await self.delivery_dispatcher.dispatch(
-            ctx.report, self.delivery_configs
-        )
+        receipts = await self.delivery_dispatcher.dispatch(ctx.report, self.delivery_configs)
         delivered = sum(1 for r in receipts if r.success)
         log.info(
             "orchestrator.delivery_done",

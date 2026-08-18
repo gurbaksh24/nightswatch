@@ -116,9 +116,7 @@ class BGESmallEmbedder(EmbeddingProvider):
 
     async def embed_documents(self, texts: list[str]) -> list[list[float]]:
         model = await asyncio.to_thread(self._load)
-        arr = await asyncio.to_thread(
-            lambda: model.encode(texts, normalize_embeddings=True)
-        )
+        arr = await asyncio.to_thread(lambda: model.encode(texts, normalize_embeddings=True))
         return [row.tolist() for row in arr]
 
     async def embed_query(self, text: str) -> list[float]:

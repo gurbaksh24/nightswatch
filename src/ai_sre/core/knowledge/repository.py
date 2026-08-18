@@ -49,6 +49,21 @@ class KnowledgeRepository(TenantScopedRepository[KnowledgeDoc]):
         await self.session.refresh(doc)
         return doc
 
+    async def find_doc_by_source_key(self, source_object_key: str) -> KnowledgeDoc | None:
+        """Active doc whose ``source_object_key`` matches, or ``None``.
+
+        Dedupe key for URL-sourced ingestion (spec 0021): the runbook URL is
+        stored as the source key, so a repeat alert doesn't re-ingest.
+        """
+        stmt = (
+            self._scoped(select(KnowledgeDoc))
+            .where(KnowledgeDoc.source_object_key == source_object_key)
+            .where(KnowledgeDoc.deleted_at.is_(None))
+            .limit(1)
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
     async def get_doc(self, doc_id: UUID) -> KnowledgeDoc | None:
         """Active (not soft-deleted) doc owned by this tenant, or None."""
         stmt = (

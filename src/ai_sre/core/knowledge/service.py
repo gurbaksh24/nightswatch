@@ -40,6 +40,8 @@ class KnowledgeDocInput:
     text: str
     is_markdown: bool = True
     metadata: dict[str, Any] | None = None
+    # Dedupe key for URL-sourced docs (spec 0021): the source URL.
+    source_object_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -70,6 +72,7 @@ class KnowledgeService:
         row = await self.repo.create_doc(
             kind=doc.kind,
             title=doc.title,
+            source_object_key=doc.source_object_key,
             metadata=doc.metadata,
         )
         chunks = self.chunker.chunk(doc.text, is_markdown=doc.is_markdown)
@@ -126,6 +129,40 @@ class KnowledgeService:
             )
             for chunk, title, distance in hits
         ]
+
+    async def ingest_runbook_from_url(
+        self,
+        url: str,
+        *,
+        timeout_seconds: int,
+        max_bytes: int,
+    ) -> str:
+        """Fetch + index a runbook URL, once (spec 0021).
+
+        Dedupes on ``source_object_key == url`` (first ingest wins; refresh
+        is a follow-up). Returns ``"ingested"`` or ``"already_ingested"``;
+        fetch/guard failures raise :class:`RunbookFetchError` for the caller
+        to log — this is always invoked best-effort.
+        """
+        from ai_sre.core.knowledge.runbook_fetcher import fetch_runbook
+
+        existing = await self.repo.find_doc_by_source_key(url)
+        if existing is not None:
+            return "already_ingested"
+
+        fetched = await fetch_runbook(url, timeout_seconds=timeout_seconds, max_bytes=max_bytes)
+        title = url.rstrip("/").rsplit("/", 1)[-1] or url
+        await self.ingest(
+            KnowledgeDocInput(
+                title=title,
+                kind="runbook",
+                text=fetched.text,
+                is_markdown=fetched.is_markdown,
+                metadata={"source_url": url, "auto_ingested": True},
+                source_object_key=url,
+            )
+        )
+        return "ingested"
 
     async def ingest_past_investigation(
         self, *, investigation_id: UUID, headline: str, body: str
