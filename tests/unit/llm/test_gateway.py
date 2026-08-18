@@ -9,7 +9,7 @@ import pytest
 from ai_sre.core.investigation.budget import Budget
 from ai_sre.core.investigation.context import InvestigationContext
 from ai_sre.core.tenant.context import TenantContext
-from ai_sre.exceptions import LLMResponseInvalid, LLMTransientError
+from ai_sre.exceptions import BudgetExhausted, LLMResponseInvalid, LLMTransientError
 from ai_sre.llm.gateway import LLMGateway, LLMProvider, LLMResponse, Message, ResponseFormat
 from ai_sre.llm.tools import ToolDispatcher, ToolRegistry, ToolSpec
 from ai_sre.utils.ids import new_id
@@ -91,6 +91,33 @@ async def test_chat_raises_when_retries_exhausted() -> None:
     with pytest.raises(LLMTransientError):
         await gateway.chat(system="s", messages=[Message(role="user", content="x")], budget=_budget())
     assert provider.calls == 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_chat_blocked_by_investigation_cost_cap() -> None:
+    """Spec 0017: an over-budget chat call is blocked before the provider."""
+    provider = _ScriptedProvider([LLMResponse(text="never")])
+    gateway = LLMGateway(provider)
+    budget = _budget(max_llm_cost_usd=0.10)
+    budget.record_llm_call(tokens=1, cost_usd=0.10)
+    with pytest.raises(BudgetExhausted):
+        await gateway.chat(system="s", messages=[Message(role="user", content="x")], budget=budget)
+    assert provider.calls == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_chat_blocked_by_tenant_cost_cap() -> None:
+    """Spec 0017 / NFR-6.1: the per-tenant rolling cap blocks the call even
+    when this investigation's own cap has headroom."""
+    provider = _ScriptedProvider([LLMResponse(text="never")])
+    gateway = LLMGateway(provider)
+    budget = _budget(max_tenant_cost_usd=1.0)
+    budget.tenant_cost_used_usd = 1.0
+    with pytest.raises(BudgetExhausted):
+        await gateway.chat(system="s", messages=[Message(role="user", content="x")], budget=budget)
+    assert provider.calls == 0
 
 
 # ---- chat: structured output ----

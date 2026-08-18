@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from ai_sre.delivery.base import DeliveryChannel, DeliveryReceipt
 from ai_sre.exceptions import DeliveryError
+from ai_sre.observability.metrics import DELIVERY_TOTAL
 from ai_sre.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -40,10 +41,12 @@ class DeliveryDispatcher:
             if channel is None:
                 continue
             try:
-                receipts.append(await channel.deliver(report, config))
+                receipt = await channel.deliver(report, config)
             except DeliveryError as exc:
                 logger.warning("delivery.failed", channel=kind, error=str(exc))
-                receipts.append(
-                    DeliveryReceipt(success=False, channel=kind, error=str(exc))
-                )
+                receipt = DeliveryReceipt(success=False, channel=kind, error=str(exc))
+            DELIVERY_TOTAL.labels(
+                channel=kind, outcome="success" if receipt.success else "error"
+            ).inc()
+            receipts.append(receipt)
         return receipts

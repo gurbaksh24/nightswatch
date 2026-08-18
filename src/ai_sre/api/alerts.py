@@ -26,6 +26,7 @@ from ai_sre.api.deps import (
 from ai_sre.core.alert.service import AlertService, AlertValidationError
 from ai_sre.core.integration.service import IntegrationService
 from ai_sre.exceptions import IntegrationCredentialDecryptionFailed
+from ai_sre.observability.metrics import WEBHOOK_RECEIVED_TOTAL
 from ai_sre.schemas.alert import AlertmanagerPayload, AlertReceiveResponse
 from ai_sre.utils.logging import get_logger
 from ai_sre.utils.webhook_signature import verify_signature
@@ -82,6 +83,7 @@ async def alertmanager_webhook(
     Returns 202 with the persisted alert ids; 401 on signature failure;
     400 on a malformed payload.
     """
+    WEBHOOK_RECEIVED_TOTAL.labels(tenant_id=str(tenant_id)).inc()
     raw = await request.body()
 
     secret = await _resolve_webhook_secret(integration_service)

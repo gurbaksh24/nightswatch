@@ -70,6 +70,13 @@ class AppSettings(BaseSettings):
     llm_max_cost_usd_per_investigation: float = Field(
         default=0.50, description="Hard cap on USD spend per investigation."
     )
+    llm_max_cost_usd_per_tenant_day: float = Field(
+        default=25.0,
+        description=(
+            "Hard cap on USD LLM spend per tenant per rolling 24h (NFR-6.1). "
+            "Enforced in LLMGateway via the investigation Budget. 0 disables."
+        ),
+    )
 
     # ---- Knowledge base / embeddings ----
     embedding_provider: Literal["hashing", "bge"] = Field(
@@ -114,6 +121,15 @@ class AppSettings(BaseSettings):
         default=10_000, description="Max data points returned per query."
     )
     prom_max_series: int = Field(default=10_000, description="Max series per query.")
+
+    # ---- Rate limiting ----
+    rate_limit_webhook_per_minute: int = Field(
+        default=100,
+        description=(
+            "Per-tenant request cap on the alert webhook, per minute "
+            "(spec 0017). 0 disables the limiter."
+        ),
+    )
 
     # ---- Slack ----
     slack_client_id: str = Field(default="", description="Slack OAuth client ID.")

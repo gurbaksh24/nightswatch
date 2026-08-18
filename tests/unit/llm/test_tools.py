@@ -134,6 +134,52 @@ async def test_handler_exception_records_error() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_dispatch_enforces_tool_call_budget() -> None:
+    """NFR-6.2 / spec 0017: the dispatcher is the choke point for the
+    per-investigation tool-call cap. BudgetExhausted propagates (the
+    gateway's tool loop catches it) and the handler never runs."""
+    from ai_sre.core.investigation.budget import Budget
+    from ai_sre.exceptions import BudgetExhausted
+
+    called: list[bool] = []
+
+    async def _tool(_input: dict[str, Any], _ctx: InvestigationContext) -> dict[str, Any]:
+        called.append(True)
+        return {}
+
+    reg = _registry(ToolSpec(name="t", description="", input_schema={}, handler=_tool))
+    ctx = _ctx()
+    ctx.budget = Budget(max_tool_calls=0)
+    with pytest.raises(BudgetExhausted):
+        await ToolDispatcher(reg, _FakeStore()).dispatch("t", {}, ctx)
+    assert called == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_dispatch_records_against_budget() -> None:
+    reg = _registry(
+        ToolSpec(
+            name="t",
+            description="",
+            input_schema={},
+            handler=lambda _i, _c: _async_ok(),
+        )
+    )
+    ctx = _ctx()
+    await ToolDispatcher(reg, _FakeStore()).dispatch("t", {}, ctx)
+    await ToolDispatcher(reg, _FakeStore()).dispatch("unknown", {}, ctx)
+    # Both attempts count — successes and errors alike (NFR-6.2 caps calls,
+    # not successes).
+    assert ctx.budget.tool_calls_used == 2
+
+
+async def _async_ok() -> dict[str, Any]:
+    return {"ok": True}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_dispatch_without_store_is_ok() -> None:
     async def _ok(_input: dict[str, Any], _ctx: InvestigationContext) -> dict[str, Any]:
         return {"ok": True}

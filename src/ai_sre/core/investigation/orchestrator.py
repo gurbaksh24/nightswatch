@@ -25,9 +25,13 @@ See LLD §7.
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+import time
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
+
+from opentelemetry import trace
+from structlog.contextvars import bound_contextvars
 
 from ai_sre.config import get_settings
 from ai_sre.core.alert.repository import AlertRepository
@@ -45,6 +49,7 @@ from ai_sre.llm.tools import REGISTRY, ToolDispatcher, register_builtin_tools
 from ai_sre.models.alert import Alert
 from ai_sre.models.service import Service
 from ai_sre.models.tenant import Tenant
+from ai_sre.observability.metrics import INVESTIGATION_DURATION_SECONDS
 from ai_sre.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -56,6 +61,8 @@ if TYPE_CHECKING:
     from ai_sre.llm.gateway import LLMGateway
 
 logger = get_logger(__name__)
+
+_tracer = trace.get_tracer("ai_sre.investigation")
 
 # Once an investigation reaches one of these it's done; re-running is a no-op.
 _TERMINAL_STATUSES = frozenset({"succeeded", "partial", "failed"})
@@ -151,6 +158,16 @@ class InvestigationOrchestrator:
 
     async def run(self, investigation_id: UUID) -> None:
         """Run the full pipeline for a single investigation. Safe to retry."""
+        # Contextvar binding (NFR-7.3, spec 0017): every log line emitted
+        # anywhere below this point — stages, tools, connectors — carries
+        # tenant_id + investigation_id without threading them by hand.
+        with bound_contextvars(
+            tenant_id=str(self.repo.tenant_id),
+            investigation_id=str(investigation_id),
+        ):
+            await self._run(investigation_id)
+
+    async def _run(self, investigation_id: UUID) -> None:
         log = logger.bind(investigation_id=str(investigation_id))
         inv = await self.repo.get(investigation_id)
         if inv is None:
@@ -161,6 +178,7 @@ class InvestigationOrchestrator:
             return
 
         log.info("orchestrator.start")
+        started_monotonic = time.monotonic()
         ctx = await self._build_context(inv)
         await self.repo.set_status(inv, status="running", started_at=datetime.now(UTC))
 
@@ -180,6 +198,9 @@ class InvestigationOrchestrator:
         # searchable past incident (FR-7.3) before delivery.
         await self._ingest_past_investigation(ctx)
         await self._dispatch_delivery(ctx)
+        INVESTIGATION_DURATION_SECONDS.labels(stage="total").observe(
+            time.monotonic() - started_monotonic
+        )
         log.info("orchestrator.done", status=inv.status)
 
     # ---- context ----
@@ -236,11 +257,21 @@ class InvestigationOrchestrator:
         )
 
         settings = get_settings()
+        # Per-tenant rolling cost cap (NFR-6.1, spec 0017): pre-load what the
+        # tenant already spent in the last 24h so the gateway can enforce the
+        # combined cap on every LLM call.
+        tenant_spent = 0.0
+        if settings.llm_max_cost_usd_per_tenant_day > 0:
+            tenant_spent = await self.repo.sum_llm_cost_since(
+                datetime.now(UTC) - timedelta(days=1)
+            )
         budget = Budget(
             max_wall_seconds=settings.inv_budget_wall_seconds,
             max_tool_calls=settings.inv_budget_tool_calls,
             max_llm_tokens=settings.llm_max_tokens_per_investigation,
             max_llm_cost_usd=settings.llm_max_cost_usd_per_investigation,
+            max_tenant_cost_usd=settings.llm_max_cost_usd_per_tenant_day,
+            tenant_cost_used_usd=tenant_spent,
         )
         budget.start()
 
@@ -272,6 +303,27 @@ class InvestigationOrchestrator:
     # ---- stage execution ----
 
     async def _run_stage(self, stage: Stage, ctx: InvestigationContext) -> None:
+        # One span + one duration observation per stage (NFR-7.1/7.2), and the
+        # stage name bound onto every log line it emits (NFR-7.3).
+        with (
+            bound_contextvars(stage=stage.name),
+            _tracer.start_as_current_span(
+                "investigation.stage",
+                attributes={
+                    "ai_sre.stage": stage.name,
+                    "ai_sre.investigation_id": str(ctx.investigation_id),
+                },
+            ),
+        ):
+            started_monotonic = time.monotonic()
+            try:
+                await self._run_stage_inner(stage, ctx)
+            finally:
+                INVESTIGATION_DURATION_SECONDS.labels(stage=stage.name).observe(
+                    time.monotonic() - started_monotonic
+                )
+
+    async def _run_stage_inner(self, stage: Stage, ctx: InvestigationContext) -> None:
         log = logger.bind(investigation_id=str(ctx.investigation_id), stage=stage.name)
         started = datetime.now(UTC)
         log.info("stage.start")

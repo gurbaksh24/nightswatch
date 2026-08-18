@@ -51,6 +51,19 @@ def get_sessionmaker() -> async_sessionmaker[AsyncSession]:
     return _sessionmaker
 
 
+async def dispose_engine() -> None:
+    """Dispose the lazily-created engine and drop the cached sessionmaker.
+
+    Called from the app's shutdown path (spec 0017 graceful shutdown). No-op
+    when the engine was never built.
+    """
+    global _engine, _sessionmaker
+    if _engine is not None:
+        await _engine.dispose()
+    _engine = None
+    _sessionmaker = None
+
+
 @asynccontextmanager
 async def session_scope() -> AsyncIterator[AsyncSession]:
     """Context-manager session for use outside FastAPI (workers, scripts)."""

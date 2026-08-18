@@ -16,6 +16,23 @@ from typing import Any
 import structlog
 
 
+def _add_trace_context(
+    _logger: Any, _method_name: str, event_dict: structlog.types.EventDict
+) -> structlog.types.EventDict:
+    """Stamp the active OTel ``trace_id``/``span_id`` onto every log line
+    (NFR-7.3, spec 0017). No-op when no span is recording or the OTel API
+    isn't installed."""
+    try:
+        from opentelemetry import trace
+    except ImportError:  # pragma: no cover - otel is a declared dependency
+        return event_dict
+    span_context = trace.get_current_span().get_span_context()
+    if span_context.is_valid:
+        event_dict.setdefault("trace_id", format(span_context.trace_id, "032x"))
+        event_dict.setdefault("span_id", format(span_context.span_id, "016x"))
+    return event_dict
+
+
 def configure_logging(settings: Any) -> None:
     """Configure structlog. `settings` is `ai_sre.config.AppSettings`.
 
@@ -28,6 +45,7 @@ def configure_logging(settings: Any) -> None:
 
     shared_processors: list[structlog.types.Processor] = [
         structlog.contextvars.merge_contextvars,
+        _add_trace_context,
         structlog.stdlib.add_log_level,
         structlog.stdlib.add_logger_name,
         timestamper,

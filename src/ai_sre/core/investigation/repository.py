@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import Float, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ai_sre.core._base.repository import TenantScopedRepository
@@ -196,6 +196,22 @@ class InvestigationRepository(TenantScopedRepository[Investigation]):
         stmt = stmt.order_by(Investigation.created_at.desc())
         result = await self.session.execute(stmt)
         return result.scalars().all()
+
+    async def sum_llm_cost_since(self, since: datetime) -> float:
+        """Total LLM spend (USD) recorded in this tenant's budget snapshots
+        for investigations created at/after ``since``.
+
+        Feeds the per-tenant rolling cost cap (NFR-6.1, spec 0017). Snapshots
+        are written on finalize, so an in-flight investigation's spend isn't
+        counted until it lands — the cap is enforced with that (acceptable)
+        lag.
+        """
+        cost = Investigation.budget_snapshot["cost_used_usd"].astext.cast(Float)
+        stmt = self._scoped(select(func.coalesce(func.sum(cost), 0.0))).where(
+            Investigation.created_at >= since,
+        )
+        result = await self.session.execute(stmt)
+        return float(result.scalar_one())
 
     # ---- read APIs (spec 0012) ----
 

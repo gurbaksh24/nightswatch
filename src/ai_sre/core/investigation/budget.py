@@ -23,6 +23,11 @@ class Budget:
     max_tool_calls: int = 30
     max_llm_tokens: int = 200_000
     max_llm_cost_usd: float = 0.50
+    # Per-tenant rolling cap (NFR-6.1, spec 0017). `tenant_cost_used_usd` is
+    # the spend other investigations already accrued in the window; the
+    # orchestrator pre-loads it from budget snapshots. 0 disables the cap.
+    max_tenant_cost_usd: float = 0.0
+    tenant_cost_used_usd: float = 0.0
 
     # Consumed
     started_monotonic: float = 0.0
@@ -67,6 +72,17 @@ class Budget:
                 "LLM cost budget exhausted",
                 details={"used_usd": self.cost_used_usd, "max_usd": self.max_llm_cost_usd},
             )
+        if (
+            self.max_tenant_cost_usd > 0
+            and self.tenant_cost_used_usd + self.cost_used_usd >= self.max_tenant_cost_usd
+        ):
+            raise BudgetExhausted(
+                "Tenant LLM cost budget exhausted",
+                details={
+                    "tenant_used_usd": self.tenant_cost_used_usd + self.cost_used_usd,
+                    "tenant_max_usd": self.max_tenant_cost_usd,
+                },
+            )
 
     # ---- recording ----
     def record_tool_call(self) -> None:
@@ -86,4 +102,6 @@ class Budget:
             "max_tool_calls": self.max_tool_calls,
             "max_llm_tokens": self.max_llm_tokens,
             "max_llm_cost_usd": self.max_llm_cost_usd,
+            "max_tenant_cost_usd": self.max_tenant_cost_usd,
+            "tenant_cost_used_usd": self.tenant_cost_used_usd,
         }
