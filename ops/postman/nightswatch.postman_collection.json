@@ -1,0 +1,1090 @@
+{
+  "info": {
+    "name": "Nightswatch (AI-SRE) \u2014 E2E flow",
+    "description": "End-to-end walkthrough: admin bootstrap \u2192 tenant + first API key \u2192 Prometheus integration \u2192 subject service \u2192 fire a signed Alertmanager webhook \u2192 read the investigation/report/trace \u2192 feedback \u2192 knowledge \u2192 backtest/replay.\n\nSetup: set `base_url` and `admin_token` in the collection variables (and `prometheus_url` if you want selector validation + real queries to succeed). Then run the folders top to bottom \u2014 every id/key/secret the flow needs is captured into collection variables automatically, including the webhook HMAC signature (computed in a pre-request script).\n\nSlack OAuth is a browser redirect flow and can't run inside Postman \u2014 open {{base_url}}/v1/integrations/slack/oauth/start in a browser with a Bearer header (or via the dashboard) to connect Slack.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "https://nightswatch.fly.dev"
+    },
+    {
+      "key": "admin_token",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "prometheus_url",
+      "value": "http://prometheus.example:9090"
+    },
+    {
+      "key": "api_key",
+      "value": ""
+    },
+    {
+      "key": "tenant_id",
+      "value": ""
+    },
+    {
+      "key": "integration_id",
+      "value": ""
+    },
+    {
+      "key": "webhook_secret",
+      "value": ""
+    },
+    {
+      "key": "service_id",
+      "value": ""
+    },
+    {
+      "key": "investigation_id",
+      "value": ""
+    },
+    {
+      "key": "knowledge_doc_id",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "0 \u00b7 Health",
+      "item": [
+        {
+          "name": "healthz",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/healthz",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "healthz"
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "readyz (checks DB + queue)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/readyz",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "readyz"
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "metrics (Prometheus exposition)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/metrics",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "metrics"
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "1 \u00b7 Admin bootstrap",
+      "item": [
+        {
+          "name": "Create tenant",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{admin_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/tenant",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "tenant"
+              ]
+            },
+            "description": "Admin-only. Saves `tenant_id`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Acme\",\n  \"slug\": \"acme\"\n}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const data = pm.response.json();",
+                  "pm.collectionVariables.set(\"tenant_id\", data.id);",
+                  "pm.test(\"status is 2xx\", () => pm.response.to.be.success);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Bootstrap first API key (admin + tenant_id)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{admin_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/auth/api-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "auth",
+                "api-keys"
+              ]
+            },
+            "description": "Spec 0018: the admin token mints a tenant's FIRST key. The plaintext `key` is shown only once \u2014 saved to `api_key`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"bootstrap\",\n  \"tenant_id\": \"{{tenant_id}}\"\n}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const data = pm.response.json();",
+                  "pm.collectionVariables.set(\"api_key\", data.key);",
+                  "pm.test(\"status is 2xx\", () => pm.response.to.be.success);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2 \u00b7 Integrations",
+      "item": [
+        {
+          "name": "Create Prometheus integration",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_key}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/integrations",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "integrations"
+              ]
+            },
+            "description": "Returns the ONE-TIME `webhook_signing_secret` \u2014 saved to `webhook_secret` (used to sign the Alertmanager webhook). Swap auth for {\"type\": \"bearer\", \"token\": \"...\"} if needed.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"kind\": \"prometheus\",\n  \"name\": \"prod-prometheus\",\n  \"config\": {\n    \"url\": \"{{prometheus_url}}\",\n    \"auth\": {\n      \"type\": \"none\"\n    }\n  }\n}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const data = pm.response.json();",
+                  "pm.collectionVariables.set(\"integration_id\", data.id);",
+                  "pm.collectionVariables.set(\"webhook_secret\", data.webhook_signing_secret);",
+                  "pm.test(\"status is 2xx\", () => pm.response.to.be.success);",
+                  "pm.test(\"one-time webhook secret returned\", () => pm.expect(data.webhook_signing_secret).to.be.a('string'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List integrations",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/integrations",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "integrations"
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Trigger health check (async)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/integrations/{{integration_id}}/health-check",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "integrations",
+                "{{integration_id}}",
+                "health-check"
+              ]
+            },
+            "description": "202: enqueues a health-check job; the worker flips status."
+          },
+          "response": []
+        },
+        {
+          "name": "Rotate webhook secret",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/integrations/{{integration_id}}/webhook-secret",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "integrations",
+                "{{integration_id}}",
+                "webhook-secret"
+              ]
+            },
+            "description": "Old secret dies immediately; new one saved to `webhook_secret`."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const data = pm.response.json();",
+                  "pm.collectionVariables.set(\"webhook_secret\", data.webhook_signing_secret);",
+                  "pm.test(\"status is 2xx\", () => pm.response.to.be.success);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3 \u00b7 Subject service",
+      "item": [
+        {
+          "name": "Register service",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_key}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/services",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "services"
+              ]
+            },
+            "description": "One per tenant (409 on second). Validates the selector against Prometheus when reachable; enqueues catalog + topology discovery.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"checkout\",\n  \"label_selector\": {\n    \"service\": \"checkout\"\n  }\n}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const data = pm.response.json();",
+                  "pm.collectionVariables.set(\"service_id\", data.id);",
+                  "pm.test(\"status is 2xx\", () => pm.response.to.be.success);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get service",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/services/{{service_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "services",
+                "{{service_id}}"
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Get topology",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/services/{{service_id}}/topology",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "services",
+                "{{service_id}}",
+                "topology"
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Get metric catalog",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/services/{{service_id}}/metrics",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "services",
+                "{{service_id}}",
+                "metrics"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "50"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Refresh metric catalog (async)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/services/{{service_id}}/metrics/refresh",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "services",
+                "{{service_id}}",
+                "metrics",
+                "refresh"
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Refresh topology (async)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/services/{{service_id}}/topology/refresh",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "services",
+                "{{service_id}}",
+                "topology",
+                "refresh"
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "4 \u00b7 Fire an alert (signed webhook)",
+      "item": [
+        {
+          "name": "Alertmanager webhook (HMAC-signed)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/webhooks/alertmanager/{{tenant_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "webhooks",
+                "alertmanager",
+                "{{tenant_id}}"
+              ]
+            },
+            "description": "No bearer auth \u2014 authenticated by HMAC over the body using the tenant's webhook signing secret (computed in the pre-request script). 202 = alert persisted + investigation enqueued. Re-sending within 15 min dedupes onto the same investigation.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"version\": \"4\",\n  \"groupKey\": \"{}:{alertname=\\\"HighErrorRate\\\"}\",\n  \"status\": \"firing\",\n  \"receiver\": \"ai-sre\",\n  \"groupLabels\": {\n    \"alertname\": \"HighErrorRate\"\n  },\n  \"commonLabels\": {\n    \"alertname\": \"HighErrorRate\",\n    \"service\": \"checkout\",\n    \"severity\": \"critical\"\n  },\n  \"commonAnnotations\": {\n    \"summary\": \"Error rate above 5%\"\n  },\n  \"externalURL\": \"http://alertmanager.example\",\n  \"alerts\": [\n    {\n      \"status\": \"firing\",\n      \"labels\": {\n        \"alertname\": \"HighErrorRate\",\n        \"service\": \"checkout\",\n        \"severity\": \"critical\",\n        \"pod\": \"checkout-abc123\"\n      },\n      \"annotations\": {\n        \"summary\": \"Error rate above 5%\",\n        \"description\": \"5xx ratio exceeded threshold for 10m\"\n      },\n      \"startsAt\": \"{{$isoTimestamp}}\",\n      \"generatorURL\": \"http://prometheus.example/graph\"\n    }\n  ]\n}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Sign the (variable-resolved) raw body exactly as Alertmanager's",
+                  "// forwarder would: X-AI-SRE-Signature: sha256=<hmac-sha256-hex>.",
+                  "const secret = pm.collectionVariables.get(\"webhook_secret\");",
+                  "const raw = pm.variables.replaceIn(pm.request.body.raw);",
+                  "const sig = 'sha256=' + CryptoJS.HmacSHA256(raw, secret).toString(CryptoJS.enc.Hex);",
+                  "pm.request.headers.upsert({key: 'X-AI-SRE-Signature', value: sig});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"202 accepted\", () => pm.response.to.have.status(202));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "5 \u00b7 Investigations",
+      "item": [
+        {
+          "name": "List investigations",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/investigations",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "investigations"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "20"
+                }
+              ]
+            },
+            "description": "Saves the newest investigation's id. Filters: status, service_id, from, to, confidence."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const data = pm.response.json();",
+                  "if (data.length) pm.collectionVariables.set('investigation_id', data[0].id);",
+                  "pm.test(\"status is 2xx\", () => pm.response.to.be.success);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get investigation",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/investigations/{{investigation_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "investigations",
+                "{{investigation_id}}"
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Get report (RCA)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/investigations/{{investigation_id}}/report",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "investigations",
+                "{{investigation_id}}",
+                "report"
+              ]
+            },
+            "description": "404 report.not_found until the pipeline finishes (~seconds with no LLM key, up to minutes with one)."
+          },
+          "response": []
+        },
+        {
+          "name": "Get full trace (stages + tool calls)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/investigations/{{investigation_id}}/trace",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "investigations",
+                "{{investigation_id}}",
+                "trace"
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "6 \u00b7 Feedback",
+      "item": [
+        {
+          "name": "Post feedback",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_key}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/investigations/{{investigation_id}}/feedback",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "investigations",
+                "{{investigation_id}}",
+                "feedback"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"kind\": \"useful\",\n  \"actor\": \"postman\",\n  \"body\": \"Spot on.\"\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "List feedback",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/investigations/{{investigation_id}}/feedback",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "investigations",
+                "{{investigation_id}}",
+                "feedback"
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "7 \u00b7 Knowledge base",
+      "item": [
+        {
+          "name": "Upload runbook (multipart)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/knowledge/docs",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "knowledge",
+                "docs"
+              ]
+            },
+            "description": "Pick a local file before sending. kind \u2208 {runbook, postmortem}.",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": [],
+                  "description": "Markdown / text / PDF, \u226410 MB"
+                },
+                {
+                  "key": "kind",
+                  "value": "runbook",
+                  "type": "text"
+                },
+                {
+                  "key": "title",
+                  "value": "Checkout runbook",
+                  "type": "text"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const data = pm.response.json();",
+                  "pm.collectionVariables.set(\"knowledge_doc_id\", data.id);",
+                  "pm.test(\"status is 2xx\", () => pm.response.to.be.success);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List docs",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/knowledge/docs",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "knowledge",
+                "docs"
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Get doc",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/knowledge/docs/{{knowledge_doc_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "knowledge",
+                "docs",
+                "{{knowledge_doc_id}}"
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Delete doc (soft)",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/knowledge/docs/{{knowledge_doc_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "knowledge",
+                "docs",
+                "{{knowledge_doc_id}}"
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "8 \u00b7 Backtest & replay",
+      "item": [
+        {
+          "name": "Backtest (dry run \u2014 no Slack post)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_key}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/investigations/backtest",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "investigations",
+                "backtest"
+              ]
+            },
+            "description": "Runs the pipeline on a submitted payload without dedupe; dry_run suppresses delivery.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"alert_payload\": {\n    \"version\": \"4\",\n    \"groupKey\": \"{}:{alertname=\\\"HighErrorRate\\\"}\",\n    \"status\": \"firing\",\n    \"receiver\": \"ai-sre\",\n    \"groupLabels\": {\n      \"alertname\": \"HighErrorRate\"\n    },\n    \"commonLabels\": {\n      \"alertname\": \"HighErrorRate\",\n      \"service\": \"checkout\",\n      \"severity\": \"critical\"\n    },\n    \"commonAnnotations\": {\n      \"summary\": \"Error rate above 5%\"\n    },\n    \"externalURL\": \"http://alertmanager.example\",\n    \"alerts\": [\n      {\n        \"status\": \"firing\",\n        \"labels\": {\n          \"alertname\": \"HighErrorRate\",\n          \"service\": \"checkout\",\n          \"severity\": \"critical\",\n          \"pod\": \"checkout-abc123\"\n        },\n        \"annotations\": {\n          \"summary\": \"Error rate above 5%\",\n          \"description\": \"5xx ratio exceeded threshold for 10m\"\n        },\n        \"startsAt\": \"{{$isoTimestamp}}\",\n        \"generatorURL\": \"http://prometheus.example/graph\"\n      }\n    ]\n  },\n  \"service_id\": \"{{service_id}}\",\n  \"dry_run\": true\n}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const data = pm.response.json();",
+                  "pm.collectionVariables.set('investigation_id', data.investigation_id || data.id);",
+                  "pm.test(\"201 created\", () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Replay an investigation",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/investigations/{{investigation_id}}/replay",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "investigations",
+                "{{investigation_id}}",
+                "replay"
+              ]
+            },
+            "description": "Re-executes the live pipeline against current data; new investigation links back via replayed_from."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "9 \u00b7 API key lifecycle",
+      "item": [
+        {
+          "name": "Issue another key (self-service)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_key}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/auth/api-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "auth",
+                "api-keys"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"second-key\"\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "List keys (no secrets)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/auth/api-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "auth",
+                "api-keys"
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Get tenant profile",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/tenant",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "tenant"
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}
