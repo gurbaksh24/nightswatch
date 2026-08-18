@@ -1,0 +1,33 @@
+# Self-managed Postgres (+pgvector) as its own Fly app.
+#
+# Deliberately NOT Fly Managed Postgres (from $38/mo) — at MVP scale a single
+# shared-cpu machine with a volume (~$2.4/mo) is the cheapest workable option.
+# Trade-off you accept: you own backups (Fly takes daily volume snapshots
+# with short retention; add a pg_dump cron for real backups — docs/deploy.md).
+#
+# Deploy:  fly deploy --config ops/fly/db/fly.toml
+# Secrets: fly secrets set -a nightswatch-db POSTGRES_PASSWORD=<strong password>
+
+app = "nightswatch-db"
+primary_region = "iad"
+
+[build]
+  image = "pgvector/pgvector:pg16"
+
+[env]
+  POSTGRES_USER = "aisre"
+  POSTGRES_DB = "aisre"
+  # The official postgres image refuses a mountpoint (lost+found) as PGDATA;
+  # point it at a subdirectory of the volume.
+  PGDATA = "/var/lib/postgresql/data/pgdata"
+
+[mounts]
+  source = "pgdata"
+  destination = "/var/lib/postgresql/data"
+
+# No [http_service]: the DB is reachable only over Fly's private 6PN network
+# at nightswatch-db.internal:5432. Never expose it publicly.
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
