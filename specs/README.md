@@ -25,6 +25,7 @@ The specs are numbered in build order. Each one's "Depends on" list reflects the
 | 0015 | `search_runbooks` + `search_past_incidents` tools | 0008, 0009, 0012, 0014 | LLM can pull from runbooks + past investigations. |
 | 0016 | Backtest + replay endpoints | 0007, 0009, 0010, 0012 | Submit a past alert and see what the system would have said. |
 | 0017 | Hardening — rate limits, observability, budgets | 0006, 0008, 0010 | Production-shaped. |
+| 0018 | Admin bootstrap for the first tenant API key | 0001 | Onboarding needs no DB access: admin token + tenant_id mints key #1. |
 
 ## First end-to-end alert → Slack RCA
 

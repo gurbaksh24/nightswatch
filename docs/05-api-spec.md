@@ -15,8 +15,21 @@
 
 ## Auth
 
-### `POST /v1/auth/api-keys` (admin only)
-Create a new API key for the calling tenant.
+### `POST /v1/auth/api-keys`
+Issue a new API key. Two bearer-auth modes (spec 0018):
+
+- **Tenant API key** — issues a key for the calling tenant (self-service
+  rotation). `tenant_id` in the body must be absent or equal to the caller's
+  own tenant id (403 `api_key.tenant_mismatch` otherwise).
+- **Admin token** — the bootstrap path for a tenant's *first* key. The admin
+  has no tenant identity, so `tenant_id` is required in the body
+  (400 `api_key.tenant_id_required` if missing; 404 `tenant.not_found` if
+  unknown).
+
+**Request**
+```json
+{ "name": "bootstrap", "tenant_id": "<required for admin auth>" }
+```
 
 **Response 201**
 ```json

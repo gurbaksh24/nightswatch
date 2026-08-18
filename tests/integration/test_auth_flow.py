@@ -50,27 +50,16 @@ async def test_full_auth_flow(client: AsyncClient) -> None:
     #    that route requires a real tenant API key. Skipping that assertion
     #    here is fine; we only assert the positive path.
 
-    # 3. Issue an API key. We need to be authenticated as the tenant first;
-    #    bootstrap by going through the DB directly is unavailable, so instead
-    #    we permit admin-token bootstrap by re-using the admin shortcut: an
-    #    admin can pose as the new tenant once. In MVP, the dashboard onboarding
-    #    flow handles this — for the test we hit the route with a *throwaway*
-    #    initial key created via the service layer.
-    #
-    #    For the integration test we instead issue the FIRST api key directly
-    #    via the API by using a side-channel: a request signed with an
-    #    initial-bootstrap header. Since the API itself doesn't ship that yet,
-    #    we use the service layer directly here for the bootstrap step.
-    from uuid import UUID
-
-    from ai_sre.core.tenant.api_key_service import ApiKeyService
-    from ai_sre.core.tenant.repository import ApiKeyRepository, TenantRepository
-    from ai_sre.db import session_scope
-
-    async with session_scope() as session:
-        service = ApiKeyService(ApiKeyRepository(session), TenantRepository(session))
-        issued = await service.issue(UUID(tenant["id"]), name="bootstrap")
-    plaintext_key = issued.key
+    # 3. Bootstrap the tenant's FIRST key via the admin path (spec 0018):
+    #    admin token + explicit tenant_id.
+    resp = await client.post(
+        "/v1/auth/api-keys",
+        json={"name": "bootstrap", "tenant_id": tenant["id"]},
+        headers=_admin_headers(),
+    )
+    assert resp.status_code == 201, resp.text
+    plaintext_key = resp.json()["key"]
+    assert plaintext_key.startswith("ai-sre-live-")
 
     # 4. Call GET /v1/tenant with the issued key.
     resp = await client.get("/v1/tenant", headers=_tenant_headers(plaintext_key))
@@ -139,6 +128,66 @@ async def test_admin_route_rejects_non_admin_token(client: AsyncClient) -> None:
     assert resp.status_code == 403
     body = resp.json()
     assert body["detail"]["code"] == "auth.invalid_token"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_admin_key_bootstrap_edge_cases(client: AsyncClient) -> None:
+    """Spec 0018: the admin path needs an explicit, existing tenant_id, and
+    tenant-key callers can't issue for a foreign tenant."""
+    resp = await client.post(
+        "/v1/tenant", json={"name": "Acme", "slug": "acme"}, headers=_admin_headers()
+    )
+    tenant = resp.json()
+
+    # Admin without tenant_id → 400 (the admin has no tenant identity).
+    resp = await client.post("/v1/auth/api-keys", json={"name": "x"}, headers=_admin_headers())
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["code"] == "api_key.tenant_id_required"
+
+    # Admin with an unknown tenant_id → 404, not an FK error.
+    resp = await client.post(
+        "/v1/auth/api-keys",
+        json={"name": "x", "tenant_id": "00000000-0000-0000-0000-000000000001"},
+        headers=_admin_headers(),
+    )
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["code"] == "tenant.not_found"
+
+    # Bootstrap properly, then: a tenant key naming a DIFFERENT tenant → 403.
+    resp = await client.post(
+        "/v1/auth/api-keys",
+        json={"name": "bootstrap", "tenant_id": tenant["id"]},
+        headers=_admin_headers(),
+    )
+    key = resp.json()["key"]
+    resp = await client.post(
+        "/v1/tenant", json={"name": "Other", "slug": "other"}, headers=_admin_headers()
+    )
+    other_tenant = resp.json()
+    resp = await client.post(
+        "/v1/auth/api-keys",
+        json={"name": "sneaky", "tenant_id": other_tenant["id"]},
+        headers=_tenant_headers(key),
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["code"] == "api_key.tenant_mismatch"
+
+    # A tenant key naming its OWN tenant_id is fine (idempotent with omitting it).
+    resp = await client.post(
+        "/v1/auth/api-keys",
+        json={"name": "self", "tenant_id": tenant["id"]},
+        headers=_tenant_headers(key),
+    )
+    assert resp.status_code == 201
+
+    # A token that is neither admin nor a valid key → 401 (unchanged).
+    resp = await client.post(
+        "/v1/auth/api-keys",
+        json={"name": "x"},
+        headers={"Authorization": "Bearer not-a-real-key"},
+    )
+    assert resp.status_code == 401
 
 
 @pytest.mark.integration

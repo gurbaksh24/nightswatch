@@ -95,10 +95,19 @@ fly status
 BASE="https://nightswatch.fly.dev"
 ADMIN_TOKEN="<the AI_SRE_ADMIN_TOKEN you set>"
 
-# tenant + API key
+# 1. create the tenant — note the "id" in the response
 curl -s -X POST "$BASE/v1/tenant" -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" -d '{"name": "Acme", "slug": "acme"}'
-curl -s -X POST "$BASE/v1/auth/api-keys" -H "Authorization: Bearer <tenant flow>" ...
+
+# 2. bootstrap the tenant's FIRST API key (admin token + explicit tenant_id,
+#    spec 0018). The "key" in the response is shown only once — save it.
+curl -s -X POST "$BASE/v1/auth/api-keys" -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "bootstrap", "tenant_id": "<tenant id from step 1>"}'
+
+# 3. every later key is tenant self-service
+curl -s -X POST "$BASE/v1/auth/api-keys" -H "Authorization: Bearer <key from step 2>" \
+  -H "Content-Type: application/json" -d '{"name": "cli"}'
 ```
 
 Then follow the normal onboarding order (docs/05-api-spec.md): create the
