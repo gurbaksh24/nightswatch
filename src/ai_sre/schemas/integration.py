@@ -53,16 +53,36 @@ class PrometheusConfigRequest(BaseModel):
     auth: PromAuth = PromAuthNone()
 
 
-class IntegrationCreateRequest(BaseModel):
-    """Request body for ``POST /v1/integrations``.
+class NewRelicConfigRequest(BaseModel):
+    """Wire-format config block for a New Relic integration (spec 0019)."""
 
-    Currently only ``kind="prometheus"`` is accepted; Slack uses the OAuth
-    flow. Unknown kinds are rejected at the validation layer as 422.
-    """
+    account_id: int = Field(gt=0)
+    api_key: str = Field(min_length=1, description="NerdGraph User API key.")
+    region: Literal["US", "EU"] = "US"
+
+
+class PrometheusIntegrationCreate(BaseModel):
+    """``kind="prometheus"`` variant of the create request."""
 
     kind: Literal["prometheus"]
     name: str = Field(min_length=1, max_length=255)
     config: PrometheusConfigRequest
+
+
+class NewRelicIntegrationCreate(BaseModel):
+    """``kind="newrelic"`` variant of the create request."""
+
+    kind: Literal["newrelic"]
+    name: str = Field(min_length=1, max_length=255)
+    config: NewRelicConfigRequest
+
+
+# Discriminated on `kind` so malformed payloads 422 with a precise error.
+# Slack is absent on purpose — it's created via the OAuth flow (spec 0010).
+IntegrationCreateRequest = Annotated[
+    PrometheusIntegrationCreate | NewRelicIntegrationCreate,
+    Field(discriminator="kind"),
+]
 
 
 class IntegrationResponse(BaseModel):

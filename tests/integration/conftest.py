@@ -27,7 +27,14 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+import ai_sre.models  # noqa: F401 — register every table on Base.metadata.
 from ai_sre.db import Base
+
+# Without the models import above, `Base.metadata.create_all` silently
+# creates ZERO tables whenever the collected test files don't transitively
+# import the ORM models — making fixtures order-dependent (a file that only
+# imports `config` fails solo with "relation ... does not exist" but passes
+# after a file that pulls the models in).
 
 
 def _resolve_db_url() -> str | None:

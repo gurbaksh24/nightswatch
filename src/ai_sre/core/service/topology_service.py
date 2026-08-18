@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
-from ai_sre.connectors.base import ConnectorKind
+from ai_sre.connectors.base import METRICS_CONNECTOR_KINDS
 from ai_sre.connectors.registry import ConnectorRegistry
 from ai_sre.core.service.repository import (
     ServiceDependencyRepository,
@@ -71,17 +71,16 @@ class TopologyService:
 
     async def refresh(self, service: Service) -> TopologyRefreshResult:
         """Discover dependency edges for ``service`` and upsert them."""
+        # First configured metrics backend wins (spec 0019); the
+        # "no_prometheus" literal now means "no metrics backend at all".
+        connector = None
         try:
-            connector = await self.connector_registry.get(
-                self.tenant_id, ConnectorKind.PROMETHEUS
-            )
-        except (IntegrationNotFound, IntegrationUnhealthy):
-            logger.info(
-                "topology.refresh.skipped_no_prometheus",
-                tenant_id=str(self.tenant_id),
-                service_id=str(service.id),
-            )
-            return TopologyRefreshResult(status="no_prometheus")
+            for kind in METRICS_CONNECTOR_KINDS:
+                try:
+                    connector = await self.connector_registry.get(self.tenant_id, kind)
+                    break
+                except (IntegrationNotFound, IntegrationUnhealthy):
+                    continue
         except IntegrationError as exc:
             logger.warning(
                 "topology.refresh.connector_lookup_failed",
@@ -90,10 +89,19 @@ class TopologyService:
                 error=str(exc),
             )
             return TopologyRefreshResult(status="error", error=str(exc))
+        if connector is None:
+            logger.info(
+                "topology.refresh.skipped_no_prometheus",
+                tenant_id=str(self.tenant_id),
+                service_id=str(service.id),
+            )
+            return TopologyRefreshResult(status="no_prometheus")
 
         try:
+            # `name` is used by entity-based backends (New Relic); the
+            # Prometheus connector ignores it.
             topo = await connector.discover_topology(
-                {"label_selector": service.label_selector}
+                {"label_selector": service.label_selector, "name": service.name}
             )
         except ConnectorError as exc:
             logger.warning(
@@ -106,10 +114,7 @@ class TopologyService:
 
         deps: list[dict[str, Any]] = [
             {"direction": "upstream", **edge} for edge in topo.get("upstream", [])
-        ] + [
-            {"direction": "downstream", **edge}
-            for edge in topo.get("downstream", [])
-        ]
+        ] + [{"direction": "downstream", **edge} for edge in topo.get("downstream", [])]
         count = await self.dependency_repo.upsert_discovered(service.id, deps)
         logger.info(
             "topology.refresh.complete",

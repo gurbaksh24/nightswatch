@@ -27,7 +27,7 @@ class Integration(IdMixin, TenantOwnedMixin, TimestampMixin, Base):
             "tenant_id", "kind", "name", name="uq_integration_tenant_kind_name"
         ),
         CheckConstraint(
-            "kind IN ('prometheus', 'slack')",
+            "kind IN ('prometheus', 'slack', 'newrelic')",
             name="ck_integration_kind",
         ),
         CheckConstraint(

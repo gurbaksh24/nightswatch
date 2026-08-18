@@ -22,11 +22,21 @@ from typing import Any
 
 class ConnectorKind(StrEnum):
     PROMETHEUS = "prometheus"
+    NEWRELIC = "newrelic"
     # Future:
     # LOKI = "loki"
     # DATADOG = "datadog"
     # SPLUNK = "splunk"
     # OTEL = "otel"
+
+
+# Kinds that can serve as a tenant's metrics backend, in preference order.
+# Discovery and selector validation try these left to right (spec 0019:
+# a tenant may have both Prometheus and New Relic connected at once).
+METRICS_CONNECTOR_KINDS: tuple[ConnectorKind, ...] = (
+    ConnectorKind.PROMETHEUS,
+    ConnectorKind.NEWRELIC,
+)
 
 
 @dataclass(frozen=True)
@@ -57,9 +67,9 @@ class Aggregation:
     """Aggregate (sum/avg/max/min) of an inner intent, optionally `by` labels."""
 
     kind: str = field(default="aggregation", init=False)
-    op: str = "sum"                                # sum | avg | max | min | count
+    op: str = "sum"  # sum | avg | max | min | count
     by: tuple[str, ...] = ()
-    inner: Any | None = None                       # another QueryIntent
+    inner: Any | None = None  # another QueryIntent
 
 
 @dataclass(frozen=True)
@@ -91,6 +101,14 @@ class RawPromQL:
     query: str = ""
 
 
+@dataclass(frozen=True)
+class RawNRQL:
+    """Raw-NRQL escape hatch (spec 0019). Validated by the New Relic connector."""
+
+    kind: str = field(default="raw_nrql", init=False)
+    query: str = ""
+
+
 QueryIntent = RateOverWindow | Aggregation | Percentile | ChangeOverTime | RawPromQL
 
 
@@ -103,6 +121,20 @@ class PromQLQuery:
     start: datetime | None = None
     end: datetime | None = None
     step: timedelta = timedelta(seconds=30)
+
+
+@dataclass(frozen=True)
+class NRQLQuery:
+    """Time bounds + intent for the New Relic connector (spec 0019).
+
+    Carries the same generic intents as ``PromQLQuery`` (translated to NRQL
+    by the connector) or a ``RawNRQL`` escape hatch.
+    """
+
+    kind: str = field(default="nrql", init=False)
+    intent: QueryIntent | RawNRQL | None = None
+    start: datetime | None = None
+    end: datetime | None = None
 
 
 # Other query types — stubbed for future connectors.
@@ -128,7 +160,7 @@ class EventQuery:
     window_seconds: int = 3600
 
 
-ConnectorQuery = PromQLQuery | LogQuery | TraceQuery | EventQuery
+ConnectorQuery = PromQLQuery | NRQLQuery | LogQuery | TraceQuery | EventQuery
 
 
 # ---- Result ----
@@ -181,3 +213,16 @@ class Connector(ABC):
             ConnectorTimeout: if the upstream system doesn't respond within the
                 configured timeout.
         """
+
+    async def probe_selector(self, selector: dict[str, str]) -> ConnectorResult:
+        """Cheap existence probe: is anything matching ``selector`` emitting
+        telemetry? ``series_count`` in the result carries the match count.
+
+        Non-abstract so existing connectors/fakes are unaffected (spec 0019);
+        connectors that support service-selector validation override it.
+        Used by ``core/`` so selector validation never imports a concrete
+        connector.
+        """
+        from ai_sre.exceptions import ConnectorUnsupported
+
+        raise ConnectorUnsupported(f"{type(self).__name__} does not support selector probing.")

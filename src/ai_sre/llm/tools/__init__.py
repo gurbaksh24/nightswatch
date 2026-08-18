@@ -80,9 +80,7 @@ class ToolRegistry:
 
     def for_stage(self, stage: str) -> list[ToolSpec]:
         return [
-            t
-            for t in self._tools.values()
-            if not t.allowed_stages or stage in t.allowed_stages
+            t for t in self._tools.values() if not t.allowed_stages or stage in t.allowed_stages
         ]
 
     def names(self) -> Iterable[str]:
@@ -132,16 +130,24 @@ class ToolDispatcher:
             spec = self.registry.get(name)
         except KeyError:
             return await self._finish(
-                ctx, name, input, started,
-                output=None, outcome="error",
+                ctx,
+                name,
+                input,
+                started,
+                output=None,
+                outcome="error",
                 error={"type": "unknown_tool", "message": f"Unknown tool {name!r}."},
             )
 
         missing = [k for k in spec.input_schema.get("required", []) if k not in input]
         if missing:
             return await self._finish(
-                ctx, name, input, started,
-                output=None, outcome="error",
+                ctx,
+                name,
+                input,
+                started,
+                output=None,
+                outcome="error",
                 error={"type": "invalid_input", "message": f"Missing required: {missing}"},
             )
 
@@ -149,8 +155,12 @@ class ToolDispatcher:
             output = await spec.handler(input, ctx)
         except Exception as exc:
             return await self._finish(
-                ctx, name, input, started,
-                output=None, outcome="error",
+                ctx,
+                name,
+                input,
+                started,
+                output=None,
+                outcome="error",
                 error={"type": type(exc).__name__, "message": str(exc)},
             )
 
@@ -195,6 +205,7 @@ def register_builtin_tools(registry: ToolRegistry = REGISTRY) -> None:
     from ai_sre.llm.tools.get_alert_details import GET_ALERT_DETAILS
     from ai_sre.llm.tools.get_service_dependencies import GET_SERVICE_DEPENDENCIES
     from ai_sre.llm.tools.list_metric_names import LIST_METRIC_NAMES
+    from ai_sre.llm.tools.query_newrelic import QUERY_NEWRELIC
     from ai_sre.llm.tools.query_prometheus import QUERY_PROMETHEUS
     from ai_sre.llm.tools.search_past_incidents import SEARCH_PAST_INCIDENTS
     from ai_sre.llm.tools.search_runbooks import SEARCH_RUNBOOKS
@@ -202,6 +213,7 @@ def register_builtin_tools(registry: ToolRegistry = REGISTRY) -> None:
     existing = set(registry.names())
     for spec in (
         QUERY_PROMETHEUS,
+        QUERY_NEWRELIC,
         LIST_METRIC_NAMES,
         GET_SERVICE_DEPENDENCIES,
         GET_ALERT_DETAILS,
