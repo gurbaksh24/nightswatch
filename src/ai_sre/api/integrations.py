@@ -80,6 +80,7 @@ def _sign_oauth_state_for(tenant_part: str) -> str:
     mac = hmac.new(secret, tenant_part.encode("utf-8"), hashlib.sha256).hexdigest()
     return f"{tenant_part}:{mac}"
 
+
 router = APIRouter()
 
 
@@ -113,7 +114,11 @@ async def create_integration(
         ) from exc
 
     resp = IntegrationCreatedResponse.model_validate(row, from_attributes=True)
-    if body.kind == "prometheus":
+    # Prometheus: HMAC signing secret for the Alertmanager webhook (spec
+    # 0006). New Relic: static token for the workflow webhook (spec 0020 —
+    # NR can't compute HMACs, so the same stored secret is compared
+    # verbatim). Both are shown once here; rotate via /webhook-secret.
+    if body.kind in ("prometheus", "newrelic"):
         resp.webhook_signing_secret = await service.generate_webhook_secret(row.id)
     return resp
 
@@ -142,9 +147,7 @@ async def rotate_webhook_secret(
             },
         )
     secret = await service.generate_webhook_secret(integration_id)
-    return WebhookSecretResponse(
-        integration_id=integration_id, webhook_signing_secret=secret
-    )
+    return WebhookSecretResponse(integration_id=integration_id, webhook_signing_secret=secret)
 
 
 @router.get(
@@ -157,9 +160,7 @@ async def list_integrations(
 ) -> list[IntegrationResponse]:
     """List all integrations for the calling tenant, newest first."""
     rows = await service.list()
-    return [
-        IntegrationResponse.model_validate(row, from_attributes=True) for row in rows
-    ]
+    return [IntegrationResponse.model_validate(row, from_attributes=True) for row in rows]
 
 
 @router.get(
@@ -335,9 +336,7 @@ async def slack_oauth_callback(
         "channel_name": webhook.get("channel"),
     }
 
-    service = IntegrationService(
-        IntegrationRepository(session, tenant_id), _get_envelope_crypto()
-    )
+    service = IntegrationService(IntegrationRepository(session, tenant_id), _get_envelope_crypto())
     try:
         row = await service.create(kind="slack", name="slack", config=config)
     except IntegrationAlreadyExists as exc:

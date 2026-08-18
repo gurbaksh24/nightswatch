@@ -56,8 +56,10 @@ async def test_create_newrelic_integration(client: AsyncClient) -> None:
     # Public view shows account + region and NEVER the API key.
     assert body["config_public"] == {"account_id": 1234, "region": "EU"}
     assert "NRAK-secret" not in resp.text
-    # No webhook signing secret for newrelic (that's spec 0020's token).
-    assert body.get("webhook_signing_secret") is None
+    # Spec 0020: creating a newrelic integration returns the one-time
+    # webhook token (used as X-AI-SRE-Token by the NR workflow destination).
+    assert isinstance(body.get("webhook_signing_secret"), str)
+    assert body["webhook_signing_secret"]
 
     listed = (await client.get("/v1/integrations", headers=headers)).json()
     assert [i["kind"] for i in listed] == ["newrelic"]

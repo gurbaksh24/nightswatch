@@ -92,6 +92,10 @@ encryption. A tenant may have both Prometheus and New Relic connected;
 discovery and selector validation prefer Prometheus, falling back to New
 Relic. (Slack is created via the OAuth flow, not this endpoint.)
 
+For both `prometheus` and `newrelic`, the create response includes a one-time
+`webhook_signing_secret`: the HMAC key for the Alertmanager webhook, or the
+static `X-AI-SRE-Token` value for the New Relic webhook (spec 0020).
+
 ### `GET /v1/integrations`
 List integrations.
 
@@ -155,6 +159,45 @@ Return the metric catalog. Supports `?filter=` substring filter and pagination.
 **Response 202**
 ```json
 { "accepted": 3, "alert_ids": ["...", "...", "..."] }
+```
+
+### `POST /v1/webhooks/newrelic/{tenant_id}` (spec 0020)
+
+**Auth:** NOT Bearer, NOT HMAC (New Relic destinations can't compute
+signatures). Static per-tenant token in `X-AI-SRE-Token`, compared
+constant-time against the `newrelic` integration's webhook secret (returned
+once at integration creation; rotate via
+`POST /v1/integrations/{id}/webhook-secret`).
+
+**Request:** our documented workflow-template contract, configured as a NR
+workflow *webhook destination* with this custom payload template:
+
+```json
+{
+  "issue_id": {{ json issueId }},
+  "title": {{ json annotations.title.[0] }},
+  "state": {{ json state }},
+  "priority": {{ json priority }},
+  "condition_name": {{ json accumulations.conditionName.[0] }},
+  "policy_name": {{ json accumulations.policyName.[0] }},
+  "entity_names": {{ json entitiesData.names }},
+  "nrql": {{ json accumulations.nrqlQuery.[0] }},
+  "route_group": {{ json accumulations.tag.route_group.[0] }},
+  "runbook_url": {{ json accumulations.runbookUrl.[0] }},
+  "started_at": {{ json createdAt }}
+}
+```
+
+Issues in a non-open `state` (e.g. `CLOSED`) are acknowledged with
+`{ "accepted": 0 }` and not investigated. Open issues are normalized into
+the same alert shape as Alertmanager ingress (`condition_name` →
+`alertname`, `priority` → `severity`, `runbook_url`/`nrql`/`issue_id` →
+annotations), so fingerprint dedupe behaves identically; the alert row
+records `source="newrelic"` with the original payload.
+
+**Response 202**
+```json
+{ "accepted": 1, "alert_ids": ["..."] }
 ```
 
 ---

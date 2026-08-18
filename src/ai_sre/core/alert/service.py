@@ -70,8 +70,16 @@ class AlertService:
         tenant_id: UUID,
         payload: AlertmanagerPayload,
         raw: bytes,
+        *,
+        source: str = "alertmanager",
+        raw_override: dict[str, object] | None = None,
     ) -> IngestResult:
         """Persist every alert, dedupe by fingerprint, enqueue investigations.
+
+        ``source`` tags the alert rows; ``raw_override`` replaces the
+        persisted raw payload — used by non-Alertmanager ingress (spec 0020's
+        New Relic webhook) so the audit trail keeps the ORIGINAL payload
+        rather than our normalized view (FR-4.5).
 
         Raises:
             AlertValidationError: if any alert lacks ``labels.alertname``
@@ -80,9 +88,7 @@ class AlertService:
         # Validate up front so we never half-ingest a bad payload.
         for incoming in payload.alerts:
             if not incoming.labels.get("alertname"):
-                raise AlertValidationError(
-                    "Alert is missing required label 'alertname'."
-                )
+                raise AlertValidationError("Alert is missing required label 'alertname'.")
 
         # The subject service (one per tenant) anchors every investigation.
         # If the tenant hasn't onboarded one yet we still persist the alert
@@ -102,9 +108,11 @@ class AlertService:
             fp = fingerprint(tenant_id, name, am_alert.labels, severity, self.unstable_labels)
 
             alert = await self.alert_repo.create(
-                source="alertmanager",
+                source=source,
                 received_at=now,
-                raw_payload=am_alert.model_dump(mode="json"),
+                raw_payload=(
+                    raw_override if raw_override is not None else am_alert.model_dump(mode="json")
+                ),
                 alert_name=name,
                 severity=severity,
                 status=am_alert.status,
@@ -115,9 +123,7 @@ class AlertService:
                 fingerprint=fp,
             )
             alert_ids.append(alert.id)
-            log = logger.bind(
-                tenant_id=str(tenant_id), alert_id=str(alert.id), fingerprint=fp
-            )
+            log = logger.bind(tenant_id=str(tenant_id), alert_id=str(alert.id), fingerprint=fp)
 
             if service is None:
                 log.warning("alert.ingested_without_service")
