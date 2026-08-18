@@ -25,7 +25,10 @@ manager before setting it** — Fly can never show a secret back, and you need
 this value again in `AI_SRE_DB_URL`:
 
 ```bash
-DB_PASSWORD="$(openssl rand -base64 24)"
+# hex, not base64: this value is embedded in AI_SRE_DB_URL, and base64's
+# `/` and `+` break psycopg's URL parsing (asyncpg tolerates them, psycopg
+# doesn't — Procrastinate uses psycopg).
+DB_PASSWORD="$(openssl rand -hex 24)"
 printf 'POSTGRES_PASSWORD: %s\n' "$DB_PASSWORD"   # save this now
 ```
 
