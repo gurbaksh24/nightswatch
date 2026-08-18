@@ -199,6 +199,11 @@ class IntegrationService:
             if isinstance(auth, dict) and isinstance(auth.get("type"), str):
                 auth_type = auth["type"]
             return {"url_host": host, "auth_type": auth_type}
+        if kind == "newrelic":
+            # The API key is the only secret; account id + region are display-safe.
+            return {
+                k: config[k] for k in ("account_id", "region") if k in config
+            }
         if kind == "slack":
             # The bot token is the only secret; team/channel identifiers are
             # safe to display.

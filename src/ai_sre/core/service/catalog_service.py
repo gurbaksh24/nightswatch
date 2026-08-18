@@ -14,7 +14,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from uuid import UUID
 
-from ai_sre.connectors.base import ConnectorKind
+from ai_sre.connectors.base import METRICS_CONNECTOR_KINDS
 from ai_sre.connectors.registry import ConnectorRegistry
 from ai_sre.core.service.repository import (
     MetricCatalogRepository,
@@ -80,17 +80,17 @@ class CatalogService:
         query error); they're returned as a typed result so callers can
         log/observe without try/except.
         """
+        # First configured metrics backend wins, in preference order
+        # (spec 0019 coexistence). The "no_prometheus" status literal is kept
+        # for API compatibility; it now means "no metrics backend at all".
+        connector = None
         try:
-            connector = await self.connector_registry.get(
-                self.tenant_id, ConnectorKind.PROMETHEUS
-            )
-        except (IntegrationNotFound, IntegrationUnhealthy):
-            logger.info(
-                "catalog.refresh.skipped_no_prometheus",
-                tenant_id=str(self.tenant_id),
-                service_id=str(service.id),
-            )
-            return CatalogRefreshResult(status="no_prometheus")
+            for kind in METRICS_CONNECTOR_KINDS:
+                try:
+                    connector = await self.connector_registry.get(self.tenant_id, kind)
+                    break
+                except (IntegrationNotFound, IntegrationUnhealthy):
+                    continue
         except IntegrationError as exc:
             logger.warning(
                 "catalog.refresh.connector_lookup_failed",
@@ -99,11 +99,16 @@ class CatalogService:
                 error=str(exc),
             )
             return CatalogRefreshResult(status="error", error=str(exc))
+        if connector is None:
+            logger.info(
+                "catalog.refresh.skipped_no_prometheus",
+                tenant_id=str(self.tenant_id),
+                service_id=str(service.id),
+            )
+            return CatalogRefreshResult(status="no_prometheus")
 
         try:
-            raw = await connector.discover_metrics(
-                {"label_selector": service.label_selector}
-            )
+            raw = await connector.discover_metrics({"label_selector": service.label_selector})
         except ConnectorError as exc:
             logger.warning(
                 "catalog.refresh.discover_failed",

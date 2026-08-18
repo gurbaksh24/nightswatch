@@ -22,6 +22,7 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ai_sre.connectors.base import Connector, ConnectorHealth, ConnectorKind
+from ai_sre.connectors.newrelic.connector import NewRelicConfig, NewRelicConnector
 from ai_sre.connectors.prometheus.connector import (
     PrometheusConfig,
     PrometheusConnector,
@@ -77,9 +78,7 @@ class ConnectorRegistry:
         self._cache[cache_key] = connector
         return connector
 
-    async def health_check_for(
-        self, tenant_id: UUID, integration_id: UUID
-    ) -> ConnectorHealth:
+    async def health_check_for(self, tenant_id: UUID, integration_id: UUID) -> ConnectorHealth:
         """Run a one-off health check against a specific integration.
 
         Always builds a fresh connector — does not cache. Use this from the
@@ -105,9 +104,7 @@ class ConnectorRegistry:
         finally:
             await self._close(connector)
 
-    async def invalidate(
-        self, tenant_id: UUID, kind: ConnectorKind | None = None
-    ) -> None:
+    async def invalidate(self, tenant_id: UUID, kind: ConnectorKind | None = None) -> None:
         """Drop cached connector(s). Closes any owned HTTP clients."""
         to_drop: list[tuple[UUID, str]] = []
         if kind is None:
@@ -167,6 +164,13 @@ class ConnectorRegistry:
                 max_series=self._max_series,
             )
             return PrometheusConnector(config)
+        if row.kind == ConnectorKind.NEWRELIC:
+            nr_config = NewRelicConfig.from_decrypted(
+                service.decrypt_config(row),
+                query_timeout_seconds=self._query_timeout_seconds,
+                max_series=self._max_series,
+            )
+            return NewRelicConnector(nr_config)
         raise IntegrationError(
             f"No connector builder for kind {row.kind!r}.",
             details={"kind": row.kind},

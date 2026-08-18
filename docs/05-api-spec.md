@@ -85,6 +85,13 @@ Create an integration.
 ```
 The integration health is checked asynchronously; poll `GET /v1/integrations/{id}` for status.
 
+Also accepted (spec 0019): `kind="newrelic"` with
+`config: { "account_id": 1234, "api_key": "NRAK-...", "region": "US" | "EU" }`.
+Its `config_public` is `{ "account_id", "region" }` — the API key never leaves
+encryption. A tenant may have both Prometheus and New Relic connected;
+discovery and selector validation prefer Prometheus, falling back to New
+Relic. (Slack is created via the OAuth flow, not this endpoint.)
+
 ### `GET /v1/integrations`
 List integrations.
 

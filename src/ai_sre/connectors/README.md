@@ -9,7 +9,8 @@ never imports a concrete connector — it asks the registry.
 |---|---|
 | `base.py` | `Connector` ABC, `ConnectorQuery` tagged union, `ConnectorResult`, `ConnectorHealth`, `ConnectorKind` enum. |
 | `registry.py` | Per-tenant connector lookup. Wires concrete connectors at startup. |
-| `prometheus/` | Prometheus connector — the only one in MVP. |
+| `prometheus/` | Prometheus connector. |
+| `newrelic/` | New Relic connector (spec 0019) — NRQL over NerdGraph; same typed intents, `RawNRQL` escape hatch, catalog + topology discovery. |
 
 ## Adding a new connector
 

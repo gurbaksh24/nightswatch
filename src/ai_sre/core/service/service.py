@@ -23,6 +23,7 @@ from typing import Any
 from uuid import UUID
 
 from ai_sre.connectors.base import (
+    METRICS_CONNECTOR_KINDS,
     ConnectorKind,
     PromQLQuery,
     RawPromQL,
@@ -145,13 +146,9 @@ class ServiceService:
         Returns the updated row, or ``None`` if the id isn't owned by this
         tenant.
         """
-        return await self.repo.update_metadata(
-            service_id, name=name, ownership=ownership
-        )
+        return await self.repo.update_metadata(service_id, name=name, ownership=ownership)
 
-    async def validate_label_selector(
-        self, selector: dict[str, str]
-    ) -> LabelSelectorValidation:
+    async def validate_label_selector(self, selector: dict[str, str]) -> LabelSelectorValidation:
         """Probe the tenant's Prometheus for series matching ``selector``.
 
         Returns a structured outcome — never raises for "selector matched
@@ -163,35 +160,40 @@ class ServiceService:
         scraped Prometheus target emits ``up``, so this is a cheap way to
         ask "is there anything at all matching these labels?".
         """
+        # First configured metrics backend wins (spec 0019 coexistence).
+        # `has_prometheus` is kept for API compatibility; it now means
+        # "has a metrics backend".
+        connector = None
         try:
-            connector = await self.connector_registry.get(
-                self.tenant_id, ConnectorKind.PROMETHEUS
-            )
-        except (IntegrationNotFound, IntegrationUnhealthy):
-            return LabelSelectorValidation(has_prometheus=False, series_count=0)
+            for kind in METRICS_CONNECTOR_KINDS:
+                try:
+                    connector = await self.connector_registry.get(self.tenant_id, kind)
+                    break
+                except (IntegrationNotFound, IntegrationUnhealthy):
+                    continue
         except IntegrationError as exc:
             logger.warning(
                 "service.validate_selector.connector_lookup_failed",
                 tenant_id=str(self.tenant_id),
                 error=str(exc),
             )
-            return LabelSelectorValidation(
-                has_prometheus=False, series_count=0, error=str(exc)
-            )
+            return LabelSelectorValidation(has_prometheus=False, series_count=0, error=str(exc))
+        if connector is None:
+            return LabelSelectorValidation(has_prometheus=False, series_count=0)
 
-        promql = self._build_existence_query(selector)
         try:
-            result = await connector.query(
-                PromQLQuery(intent=RawPromQL(query=promql))
-            )
+            if connector.kind == ConnectorKind.PROMETHEUS:
+                promql = self._build_existence_query(selector)
+                result = await connector.query(PromQLQuery(intent=RawPromQL(query=promql)))
+            else:
+                # Non-Prometheus backends own their probe (base-class hook).
+                result = await connector.probe_selector(selector)
         except ConnectorTimeout as exc:
             return LabelSelectorValidation(
                 has_prometheus=True, series_count=0, error=f"timeout: {exc}"
             )
         except ConnectorError as exc:
-            return LabelSelectorValidation(
-                has_prometheus=True, series_count=0, error=str(exc)
-            )
+            return LabelSelectorValidation(has_prometheus=True, series_count=0, error=str(exc))
 
         if not result.success:
             return LabelSelectorValidation(
@@ -221,10 +223,7 @@ class ServiceService:
         """Build ``up{label="value",...}`` for the validation probe."""
         if not selector:
             return "up"
-        parts = [
-            f'{k}="{cls._escape_label_value(v)}"'
-            for k, v in sorted(selector.items())
-        ]
+        parts = [f'{k}="{cls._escape_label_value(v)}"' for k, v in sorted(selector.items())]
         return "up{" + ",".join(parts) + "}"
 
     @staticmethod
@@ -245,10 +244,7 @@ class ServiceService:
             if validation.error:
                 # We tried to look up the connector and something went
                 # wrong before we could even reach Prometheus.
-                warnings.append(
-                    "Could not look up Prometheus integration: "
-                    f"{validation.error}"
-                )
+                warnings.append(f"Could not look up Prometheus integration: {validation.error}")
             return slo_config, warnings
 
         if validation.error:
