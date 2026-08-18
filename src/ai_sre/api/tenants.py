@@ -19,6 +19,7 @@ from ai_sre.api.deps import (
     TenantContext,
     admin_only,
     current_tenant,
+    current_tenant_or_admin,
     get_api_key_service,
     get_tenant_service,
 )
@@ -35,6 +36,9 @@ from ai_sre.schemas.tenant import (
     TenantResponse,
     TenantUpdateRequest,
 )
+from ai_sre.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 router = APIRouter()
 
@@ -111,15 +115,51 @@ async def update_tenant(
     "/auth/api-keys",
     status_code=status.HTTP_201_CREATED,
     response_model=ApiKeyIssuedResponse,
-    summary="Issue a new API key for the calling tenant.",
+    summary="Issue a new API key (tenant self-service, or admin bootstrap with tenant_id).",
 )
 async def create_api_key(
     body: ApiKeyCreateRequest,
-    tenant: TenantContext = Depends(current_tenant),
+    caller: TenantContext | None = Depends(current_tenant_or_admin),
     service: ApiKeyService = Depends(get_api_key_service),
+    tenant_service: TenantService = Depends(get_tenant_service),
 ) -> ApiKeyIssuedResponse:
-    """Issue a new API key. The plaintext key is returned only in this response."""
-    issued = await service.issue(tenant.tenant_id, name=body.name)
+    """Issue a new API key. The plaintext key is returned only in this response.
+
+    Two auth modes (spec 0018): a tenant API key issues for the caller's own
+    tenant; the admin token issues for the tenant named in ``body.tenant_id``
+    — the bootstrap path for a tenant's *first* key.
+    """
+    if caller is None:
+        # Admin bootstrap: the admin has no tenant identity, so the target
+        # must be explicit, and must exist (ApiKeyService.issue doesn't check).
+        if body.tenant_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": "api_key.tenant_id_required",
+                    "message": "tenant_id is required when using admin auth.",
+                },
+            )
+        if await tenant_service.get(body.tenant_id) is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"code": "tenant.not_found", "message": "Tenant not found."},
+            )
+        tenant_id = body.tenant_id
+    else:
+        if body.tenant_id is not None and body.tenant_id != caller.tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "api_key.tenant_mismatch",
+                    "message": "tenant_id does not match the calling tenant.",
+                },
+            )
+        tenant_id = caller.tenant_id
+
+    issued = await service.issue(tenant_id, name=body.name)
+    if caller is None:
+        logger.info("api_key.admin_issued", tenant_id=str(tenant_id), prefix=issued.prefix)
     return ApiKeyIssuedResponse(
         id=issued.id,
         key=issued.key,

@@ -11,6 +11,7 @@ this module for backward-compatible route signatures.
 
 from __future__ import annotations
 
+import secrets
 from collections.abc import AsyncIterator
 from functools import lru_cache
 from uuid import UUID
@@ -62,6 +63,7 @@ __all__ = [
     "TenantContext",
     "admin_only",
     "current_tenant",
+    "current_tenant_or_admin",
     "get_alert_service",
     "get_api_key_service",
     "get_backtest_service",
@@ -117,9 +119,7 @@ def _get_envelope_crypto() -> EnvelopeEncryptionService:
     against env-var changes only after a process restart (intended).
     """
     settings = get_settings()
-    return EnvelopeEncryptionService(
-        settings.tenant_encryption_key.get_secret_value()
-    )
+    return EnvelopeEncryptionService(settings.tenant_encryption_key.get_secret_value())
 
 
 def _unauthorized(message: str) -> HTTPException:
@@ -144,6 +144,24 @@ async def current_tenant(
     if ctx is None:
         raise _unauthorized("Invalid or revoked API key.")
     return ctx
+
+
+async def current_tenant_or_admin(
+    authorization: str = Header(..., alias="Authorization"),
+    api_key_service: ApiKeyService = Depends(get_api_key_service),
+) -> TenantContext | None:
+    """Bearer auth accepting either a tenant API key or the admin secret.
+
+    Returns the ``TenantContext`` for a tenant key, or ``None`` for the admin
+    token (constant-time compare). Used by ``POST /v1/auth/api-keys`` so the
+    admin can bootstrap a new tenant's *first* key (spec 0018); the route
+    requires an explicit ``tenant_id`` on the admin path.
+    """
+    settings = get_settings()
+    expected = f"Bearer {settings.admin_token.get_secret_value()}"
+    if secrets.compare_digest(authorization.encode(), expected.encode()):
+        return None
+    return await current_tenant(authorization, api_key_service)
 
 
 async def admin_only(
@@ -270,9 +288,7 @@ def get_integration_service_for_tenant(
     Used by the webhook receiver to load + decrypt the tenant's webhook
     signing secret.
     """
-    return IntegrationService(
-        IntegrationRepository(session, tenant_id), _get_envelope_crypto()
-    )
+    return IntegrationService(IntegrationRepository(session, tenant_id), _get_envelope_crypto())
 
 
 def get_alert_service(
@@ -342,9 +358,7 @@ def get_knowledge_service(
     session: AsyncSession = Depends(get_session),
 ) -> KnowledgeService:
     """Tenant-scoped KnowledgeService with the process-wide embedder."""
-    return KnowledgeService(
-        KnowledgeRepository(session, tenant.tenant_id), get_embedder()
-    )
+    return KnowledgeService(KnowledgeRepository(session, tenant.tenant_id), get_embedder())
 
 
 def get_backtest_service(
