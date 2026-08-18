@@ -66,11 +66,7 @@ class Chunker:
 
     def chunk(self, text: str, *, is_markdown: bool = True) -> list[Chunk]:
         """Return ordered chunks for ``text`` (empty list if blank)."""
-        sections = (
-            self._split_sections(text)
-            if is_markdown
-            else [([], text)]
-        )
+        sections = self._split_sections(text) if is_markdown else [([], text)]
         chunks: list[Chunk] = []
         for headings, body in sections:
             body = body.strip()

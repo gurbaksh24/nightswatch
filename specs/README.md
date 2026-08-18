@@ -28,6 +28,7 @@ The specs are numbered in build order. Each one's "Depends on" list reflects the
 | 0018 | Admin bootstrap for the first tenant API key | 0001 | Onboarding needs no DB access: admin token + tenant_id mints key #1. |
 | 0019 | New Relic connector (query side) | 0002, 0003, 0005, 0008 | Tenants connect New Relic; the LLM queries NRQL; catalog/topology from NerdGraph. |
 | 0020 | New Relic alert webhook | 0006, 0019 | NR workflow issues start investigations (static-token auth, template payload). |
+| 0021 | Runbook auto-ingestion | 0014, 0020 | Alerts carrying runbook_url get their runbook fetched + indexed before the LLM runs. |
 
 ## First end-to-end alert → Slack RCA
 
